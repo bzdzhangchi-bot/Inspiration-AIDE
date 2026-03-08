@@ -1,5 +1,7 @@
 import express from 'express';
 import cors from 'cors';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { WebSocketServer } from 'ws';
 import { openDb } from './db.js';
 import { checkProviderConnection, streamAgentPatch, streamAgentSession, streamChat, streamInlineCompletion } from './providers.js';
@@ -7,6 +9,49 @@ const PORT = Number(process.env.ASSISTANT_DESK_PORT || 17840);
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
+function decodeWorkspacePreviewToken(token) {
+    const normalized = token.replace(/-/g, '+').replace(/_/g, '/');
+    const padding = normalized.length % 4 === 0 ? '' : '='.repeat(4 - (normalized.length % 4));
+    return Buffer.from(`${normalized}${padding}`, 'base64').toString('utf8');
+}
+function isPathInside(parentPath, targetPath) {
+    const relative = path.relative(parentPath, targetPath);
+    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+app.get(/^\/workspace-preview\/([^/]+)\/(.+)$/, async (req, res) => {
+    const match = req.path.match(/^\/workspace-preview\/([^/]+)\/(.+)$/);
+    if (!match) {
+        res.status(404).end();
+        return;
+    }
+    try {
+        const workspaceRoot = path.resolve(decodeWorkspacePreviewToken(match[1]));
+        const relativePath = decodeURIComponent(match[2]);
+        const resolvedPath = path.resolve(workspaceRoot, relativePath);
+        if (!isPathInside(workspaceRoot, resolvedPath)) {
+            res.status(403).type('text/plain').send('Preview path denied');
+            return;
+        }
+        const stats = await fs.stat(resolvedPath);
+        const finalPath = stats.isDirectory() ? path.join(resolvedPath, 'index.html') : resolvedPath;
+        if (!isPathInside(workspaceRoot, finalPath)) {
+            res.status(403).type('text/plain').send('Preview path denied');
+            return;
+        }
+        res.setHeader('Cache-Control', 'no-store');
+        res.sendFile(finalPath);
+    }
+    catch (error) {
+        if (error?.code === 'ENOENT') {
+            res.status(404).type('text/plain').send('Preview file not found');
+            return;
+        }
+        res.status(500).json({
+            ok: false,
+            message: error instanceof Error ? error.message : 'Failed to load preview file'
+        });
+    }
+});
 const db = openDb();
 void db; // db is initialized for MVP; persistence wiring comes next
 app.get('/health', (_req, res) => {

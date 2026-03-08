@@ -13,7 +13,7 @@ import type {
   ProviderConnectionResult
 } from '../shared/types';
 
-const CORE_SERVER_URL = 'http://127.0.0.1:17840';
+export const CORE_SERVER_URL = 'http://127.0.0.1:17840';
 
 function openWsStream(message: ClientWsMessage) {
   const ws = new WebSocket('ws://127.0.0.1:17840/ws');

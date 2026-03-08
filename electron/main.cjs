@@ -1,7 +1,8 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = require('fs/promises');
+const os = require('os');
 const { spawn } = require('child_process');
 const pty = require('node-pty');
 
@@ -728,6 +729,166 @@ function detectBinary(buffer) {
   return sample.length > 0 && suspicious / sample.length > 0.1;
 }
 
+async function pathExists(targetPath) {
+  try {
+    await fsp.access(targetPath, fs.constants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function toClaudeProjectKey(rootPath) {
+  const resolved = path.resolve(rootPath);
+  return resolved.replace(/[\\/]+/g, '-');
+}
+
+function withTilde(targetPath) {
+  const home = os.homedir();
+  if (!targetPath.startsWith(home)) return targetPath;
+  return `~${targetPath.slice(home.length)}`;
+}
+
+async function readTextPreview(filePath, maxLines = 24) {
+  const contents = await fsp.readFile(filePath, 'utf8');
+  const normalized = contents.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = normalized.split('\n');
+  return {
+    preview: lines.slice(0, maxLines).join('\n').trim(),
+    lineCount: lines.length
+  };
+}
+
+async function buildClaudeMemoryFileItem(filePath, scope, kind, rootPath = null) {
+  const stat = await fsp.stat(filePath);
+  const { preview, lineCount } = await readTextPreview(filePath);
+  return {
+    id: `${scope}:${kind}:${filePath}`,
+    path: filePath,
+    displayPath: withTilde(filePath),
+    relativePath: rootPath ? path.relative(rootPath, filePath).replace(/\\/g, '/') : path.basename(filePath),
+    name: path.basename(filePath),
+    scope,
+    kind,
+    lineCount,
+    preview,
+    updatedAt: stat.mtimeMs,
+    size: stat.size
+  };
+}
+
+async function collectMarkdownFilesRecursively(baseDir, scope, kind, maxDepth = 5) {
+  const items = [];
+  if (!(await pathExists(baseDir))) return items;
+
+  async function walk(currentDir, depth) {
+    if (depth > maxDepth) return;
+    const entries = await fsp.readdir(currentDir, { withFileTypes: true });
+    for (const entry of entries) {
+      const nextPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(nextPath, depth + 1);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.md')) continue;
+      items.push(await buildClaudeMemoryFileItem(nextPath, scope, kind, baseDir));
+    }
+  }
+
+  await walk(baseDir, 0);
+  items.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  return items;
+}
+
+async function inspectClaudeMemory(workspaceRoot) {
+  const resolvedWorkspaceRoot = resolveWithinWorkspace(workspaceRoot || state.workspaceRoot);
+  const instructionFiles = [];
+  const autoMemoryFiles = [];
+  const notices = [];
+  const homeDir = os.homedir();
+  const userClaudeDir = path.join(homeDir, '.claude');
+  const projectKey = toClaudeProjectKey(resolvedWorkspaceRoot);
+  const autoMemoryRoot = path.join(userClaudeDir, 'projects', projectKey, 'memory');
+  const workspaceCandidates = [
+    { filePath: path.join(resolvedWorkspaceRoot, 'CLAUDE.md'), scope: 'project', kind: 'claude' },
+    { filePath: path.join(resolvedWorkspaceRoot, 'CLAUDE.local.md'), scope: 'project', kind: 'local' },
+    { filePath: path.join(resolvedWorkspaceRoot, '.claude', 'CLAUDE.md'), scope: 'project', kind: 'claude' }
+  ];
+
+  for (const candidate of workspaceCandidates) {
+    if (!(await pathExists(candidate.filePath))) continue;
+    instructionFiles.push(await buildClaudeMemoryFileItem(candidate.filePath, candidate.scope, candidate.kind, resolvedWorkspaceRoot));
+  }
+
+  const projectRulesDir = path.join(resolvedWorkspaceRoot, '.claude', 'rules');
+  instructionFiles.push(...await collectMarkdownFilesRecursively(projectRulesDir, 'project', 'rule'));
+
+  const userClaudeFile = path.join(userClaudeDir, 'CLAUDE.md');
+  if (await pathExists(userClaudeFile)) {
+    instructionFiles.push(await buildClaudeMemoryFileItem(userClaudeFile, 'user', 'claude', userClaudeDir));
+  }
+
+  const userRulesDir = path.join(userClaudeDir, 'rules');
+  instructionFiles.push(...await collectMarkdownFilesRecursively(userRulesDir, 'user', 'rule'));
+
+  let autoMemoryEnabled = true;
+  const localSettingsPath = path.join(resolvedWorkspaceRoot, '.claude', 'settings.local.json');
+  if (await pathExists(localSettingsPath)) {
+    try {
+      const raw = await fsp.readFile(localSettingsPath, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (typeof parsed.autoMemoryEnabled === 'boolean') {
+        autoMemoryEnabled = parsed.autoMemoryEnabled;
+      }
+    } catch {
+      notices.push('Unable to parse .claude/settings.local.json');
+    }
+  }
+
+  if (await pathExists(autoMemoryRoot)) {
+    autoMemoryFiles.push(...await collectMarkdownFilesRecursively(autoMemoryRoot, 'auto', 'memory'));
+  } else {
+    notices.push('Auto memory folder has not been created for this workspace yet');
+  }
+
+  return {
+    workspaceRoot: resolvedWorkspaceRoot,
+    projectKey,
+    autoMemoryEnabled,
+    autoMemoryRoot: withTilde(autoMemoryRoot),
+    instructionFiles,
+    autoMemoryFiles,
+    notices
+  };
+}
+
+function resolveClaudeAccessiblePath(targetPath, workspaceRoot) {
+  if (typeof targetPath !== 'string' || !targetPath.trim()) {
+    throw new Error('Invalid Claude memory path');
+  }
+
+  const resolved = path.resolve(targetPath);
+  const homeClaudeRoot = path.join(os.homedir(), '.claude');
+  const allowedRoots = [homeClaudeRoot];
+
+  try {
+    const resolvedWorkspaceRoot = resolveWithinWorkspace(workspaceRoot || state.workspaceRoot);
+    allowedRoots.push(resolvedWorkspaceRoot);
+  } catch {
+    // Ignore if no workspace is active; ~/.claude is still allowed.
+  }
+
+  const allowedRoot = allowedRoots
+    .sort((a, b) => b.length - a.length)
+    .find((root) => resolved === root || resolved.startsWith(root + path.sep));
+
+  if (!allowedRoot) {
+    throw new Error('Path denied (outside Claude-accessible locations)');
+  }
+
+  return resolved;
+}
+
 function registerIpc() {
   ipcMain.handle('workspace:getRoot', async () => state.workspaceRoot);
   ipcMain.handle('workspace:getRoots', async () => [...state.workspaceRoots]);
@@ -870,6 +1031,23 @@ function registerIpc() {
     const pickedPath = r.filePaths[0];
     const contents = await fsp.readFile(pickedPath, 'utf8');
     return { path: pickedPath, contents };
+  });
+
+  ipcMain.handle('claude:getMemorySnapshot', async (_ev, { workspaceRoot }) => {
+    return await inspectClaudeMemory(workspaceRoot);
+  });
+
+  ipcMain.handle('claude:readMemoryFile', async (_ev, { filePath, workspaceRoot }) => {
+    const resolved = resolveClaudeAccessiblePath(filePath, workspaceRoot);
+    const stat = await fsp.stat(resolved);
+    if (!stat.isFile()) throw new Error('Not a file');
+    return await fsp.readFile(resolved, 'utf8');
+  });
+
+  ipcMain.handle('claude:revealPath', async (_ev, { filePath, workspaceRoot }) => {
+    const resolved = resolveClaudeAccessiblePath(filePath, workspaceRoot);
+    shell.showItemInFolder(resolved);
+    return true;
   });
 }
 

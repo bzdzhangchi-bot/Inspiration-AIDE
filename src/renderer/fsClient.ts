@@ -3,6 +3,30 @@ type WorkspaceEvent =
   | { type: 'changed'; eventType: string; path: string }
   | { type: 'error'; message: string };
 
+export type ClaudeMemoryFile = {
+  id: string;
+  path: string;
+  displayPath: string;
+  relativePath: string;
+  name: string;
+  scope: 'user' | 'project' | 'auto';
+  kind: 'claude' | 'local' | 'rule' | 'memory';
+  lineCount: number;
+  preview: string;
+  updatedAt: number;
+  size: number;
+};
+
+export type ClaudeMemorySnapshot = {
+  workspaceRoot: string;
+  projectKey: string;
+  autoMemoryEnabled: boolean;
+  autoMemoryRoot: string;
+  instructionFiles: ClaudeMemoryFile[];
+  autoMemoryFiles: ClaudeMemoryFile[];
+  notices: string[];
+};
+
 export const fsClient = {
   async selectWorkspaceFolder(): Promise<string | null> {
     return window.assistantDesk.selectWorkspaceFolder();
@@ -50,6 +74,18 @@ export const fsClient = {
 
   async openArbitraryTextFile(): Promise<{ path: string; contents: string } | null> {
     return window.assistantDesk.openArbitraryTextFile();
+  },
+
+  async getClaudeMemorySnapshot(workspaceRoot?: string | null): Promise<ClaudeMemorySnapshot> {
+    return window.assistantDesk.getClaudeMemorySnapshot(workspaceRoot);
+  },
+
+  async readClaudeMemoryFile(filePath: string, workspaceRoot?: string | null): Promise<string> {
+    return window.assistantDesk.readClaudeMemoryFile(filePath, workspaceRoot);
+  },
+
+  async revealClaudePath(filePath: string, workspaceRoot?: string | null): Promise<boolean> {
+    return window.assistantDesk.revealClaudePath(filePath, workspaceRoot);
   },
 
   onWorkspaceEvent(listener: (event: WorkspaceEvent) => void) {

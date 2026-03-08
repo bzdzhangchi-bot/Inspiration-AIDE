@@ -33,10 +33,15 @@ const DEFAULT_SETTINGS: SettingsState = {
 };
 
 const MIN_ASSISTANT_VISIBLE_HEIGHT = 420;
+const MIN_ASSISTANT_VISIBLE_HEIGHT_CLAUDE_CLI = 160;
 
-function getTerminalMaxHeight() {
+function getTerminalMaxHeight(interactionMode?: ModelProfile['interactionMode']) {
+  const minAssistantVisibleHeight = interactionMode === 'claude_cli'
+    ? MIN_ASSISTANT_VISIBLE_HEIGHT_CLAUDE_CLI
+    : MIN_ASSISTANT_VISIBLE_HEIGHT;
+
   if (typeof window === 'undefined') return 420;
-  return Math.max(180, window.innerHeight - MIN_ASSISTANT_VISIBLE_HEIGHT);
+  return Math.max(180, window.innerHeight - minAssistantVisibleHeight);
 }
 
 function normalizeSettings(parsed: Partial<SettingsState> & {
@@ -113,11 +118,14 @@ function App() {
     return raw === 'dark' || raw === 'light' || raw === 'system' ? raw : 'system';
   });
 
+  const activeProfile = settings.profiles.find((profile) => profile.id === settings.activeProfileId) ?? settings.profiles[0] ?? DEFAULT_PROFILE;
+  const isProjectPage = activePage === 'project';
+
   const [isChatDrawerOpen, setIsChatDrawerOpen] = useState(true);
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
   const [terminalHeight, setTerminalHeight] = useState(() => {
     const raw = Number(localStorage.getItem('terminalHeight'));
-    const maxHeight = getTerminalMaxHeight();
+    const maxHeight = getTerminalMaxHeight(activeProfile.interactionMode);
     const safeDefault = Math.min(220, maxHeight);
     if (!Number.isFinite(raw) || raw < 180) return safeDefault;
     return Math.max(180, Math.min(raw, maxHeight));
@@ -142,7 +150,7 @@ function App() {
     function onPointerMove(ev: PointerEvent) {
       const drag = terminalResizeRef.current;
       if (!drag) return;
-      const maxHeight = getTerminalMaxHeight();
+      const maxHeight = getTerminalMaxHeight(activeProfile.interactionMode);
       const nextHeight = Math.max(180, Math.min(maxHeight, drag.startHeight + (drag.startY - ev.clientY)));
       setTerminalHeight(nextHeight);
     }
@@ -159,17 +167,17 @@ function App() {
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', onPointerUp);
     };
-  }, []);
+  }, [activeProfile.interactionMode]);
 
   useEffect(() => {
     function clampTerminalHeightOnResize() {
-      const maxHeight = getTerminalMaxHeight();
+      const maxHeight = getTerminalMaxHeight(activeProfile.interactionMode);
       setTerminalHeight((prev) => Math.max(180, Math.min(prev, maxHeight)));
     }
 
     window.addEventListener('resize', clampTerminalHeightOnResize);
     return () => window.removeEventListener('resize', clampTerminalHeightOnResize);
-  }, []);
+  }, [activeProfile.interactionMode]);
 
   async function runTerminalCommandFromChat(command: string, timeoutMs = 20000): Promise<TerminalCommandResult> {
     setIsTerminalOpen(true);
@@ -205,8 +213,6 @@ function App() {
     terminalPanelRef.current?.focusActiveSession();
   }
 
-  const activeProfile = settings.profiles.find((profile) => profile.id === settings.activeProfileId) ?? settings.profiles[0] ?? DEFAULT_PROFILE;
-
   const appStyle = {
     '--font-ui': settings.uiFontFamily,
     '--font-chat': settings.chatFontFamily,
@@ -226,23 +232,56 @@ function App() {
       />
 
       <div className="contentColumn">
-        <div className="main">
-          {activePage === 'project' ? (
-            <ChatPage
-              settings={activeProfile}
-              profiles={settings.profiles}
-              activeProfileId={settings.activeProfileId}
-              onSelectProfile={(profileId) => setSettings((prev) => ({ ...prev, activeProfileId: profileId }))}
-              isDrawerOpen={isChatDrawerOpen}
-              onToggleDrawer={() => setIsChatDrawerOpen((v) => !v)}
-              onRunCommandInTerminal={runTerminalCommandFromChat}
-              onInterruptAgentRun={interruptAgentRunFromChat}
-              onSendPromptToClaudeCli={sendPromptToClaudeCliFromChat}
-              onInterruptClaudeCli={interruptClaudeCliFromChat}
-            />
-          ) : (
-            <SettingsPage settings={settings} onChange={setSettings} themeMode={themeMode} onThemeChange={setThemeMode} />
-          )}
+        <div className={isProjectPage ? 'contentBody withSideRail' : 'contentBody'}>
+          <div className={isProjectPage ? 'main' : 'main scrollable'}>
+            {activePage === 'project' ? (
+              <ChatPage
+                settings={activeProfile}
+                profiles={settings.profiles}
+                activeProfileId={settings.activeProfileId}
+                onSelectProfile={(profileId) => setSettings((prev) => ({ ...prev, activeProfileId: profileId }))}
+                isDrawerOpen={isChatDrawerOpen}
+                onToggleDrawer={() => setIsChatDrawerOpen((v) => !v)}
+                onRunCommandInTerminal={runTerminalCommandFromChat}
+                onInterruptAgentRun={interruptAgentRunFromChat}
+                onSendPromptToClaudeCli={sendPromptToClaudeCliFromChat}
+                onInterruptClaudeCli={interruptClaudeCliFromChat}
+              />
+            ) : (
+              <SettingsPage settings={settings} onChange={setSettings} themeMode={themeMode} onThemeChange={setThemeMode} />
+            )}
+          </div>
+
+          {isProjectPage ? (
+            <aside className="appSideRail" aria-label="Workspace tools">
+              <button
+                type="button"
+                className={isChatDrawerOpen ? 'appSideRailItem active' : 'appSideRailItem'}
+                onClick={() => setIsChatDrawerOpen((v) => !v)}
+                aria-pressed={isChatDrawerOpen}
+                title={isChatDrawerOpen ? 'Hide Assistant panel' : 'Show Assistant panel'}
+              >
+                <span className="appSideRailGlyph" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M12 3.5 4.5 7.75v8.5L12 20.5l7.5-4.25v-8.5L12 3.5Z" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinejoin="round" />
+                    <path d="M9 10.5h6M9 13.5h4.5" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" />
+                  </svg>
+                </span>
+                <span className="appSideRailText">Assistant</span>
+                <span className="appSideRailMeta">{isChatDrawerOpen ? 'On' : 'Off'}</span>
+              </button>
+
+              <button type="button" className="appSideRailItem placeholder" disabled title="Reserved for future workspace tools">
+                <span className="appSideRailGlyph" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M6 12h12M12 6v12" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" />
+                  </svg>
+                </span>
+                <span className="appSideRailText">Next Tool</span>
+                <span className="appSideRailMeta">Soon</span>
+              </button>
+            </aside>
+          ) : null}
         </div>
         <TerminalPanel
           ref={terminalPanelRef}
@@ -270,14 +309,6 @@ function App() {
         </div>
 
         <div className="statusBarGroup">
-          <button
-            className="statusBarItem"
-            type="button"
-            onClick={() => setIsChatDrawerOpen((v) => !v)}
-          >
-            {isChatDrawerOpen ? 'Assistant: On' : 'Assistant: Off'}
-          </button>
-          <div className="statusBarSep" />
           <button
             className="statusBarItem"
             type="button"

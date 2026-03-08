@@ -1,8 +1,9 @@
+import DOMPurify from 'dompurify';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { AgentSessionMessage, ChatMessage, ChatRequest } from '../../shared/types';
 import { claudeCodeClient, type ClaudeCodeRuntimeState } from '../claudeCodeClient';
 import { checkProviderConnection, openAgentSessionStream, openChatStream } from '../wsClient';
-import { fsClient } from '../fsClient';
+import { fsClient, type ClaudeMemorySnapshot } from '../fsClient';
 import { terminalClient, type TerminalCommandResult, type TerminalEvent } from '../terminalClient';
 import { WorkspacePanel, type WorkspacePanelContext, type WorkspacePanelHandle } from '../workspace/WorkspacePanel';
 import type { ModelProfile } from './SettingsPage';
@@ -46,6 +47,7 @@ type ClaudeSkillItem = {
   name: string;
   source: 'workspace' | 'runtime';
   meta?: string;
+  path?: string;
 };
 
 type SessionHistoryItem = {
@@ -56,6 +58,41 @@ type SessionHistoryItem = {
   lastUserText: string;
   lastAssistantText: string;
 };
+
+type ClaudeMemoryGroup = {
+  key: string;
+  title: string;
+  items: ClaudeMemorySnapshot['instructionFiles'];
+  emptyText: string;
+};
+
+type ClaudeInspectorSection = 'overview' | 'memory' | 'skills';
+type ClaudeInspectorFile = ClaudeMemorySnapshot['instructionFiles'][number];
+type ClaudeInspectorTimelineItem = {
+  id: string;
+  label: string;
+  meta: string;
+  updatedAt: number;
+};
+
+function looksLikeHtml(value: string) {
+  return /<\/?[a-z][\s\S]*>/i.test(value);
+}
+
+function ChatBubbleContent({ content }: { content: string }) {
+  const sanitizedHtml = useMemo(() => {
+    if (!looksLikeHtml(content)) return null;
+    return DOMPurify.sanitize(content, {
+      USE_PROFILES: { html: true }
+    });
+  }, [content]);
+
+  if (sanitizedHtml !== null) {
+    return <div className="bubbleRichContent" dangerouslySetInnerHTML={{ __html: sanitizedHtml }} />;
+  }
+
+  return <div className="bubblePlainText">{content}</div>;
+}
 
 function providerLabelFor(providerId: ModelProfile['providerId']) {
   if (providerId === 'github_copilot') return 'Copilot';
@@ -448,6 +485,55 @@ const CLI_NOISE_LINE_PATTERNS = [
   /^\[[A-Z0-9_;?]+\]$/
 ];
 
+const CLI_VISUAL_NOISE_CHARS = /[·•●◦○✳✶✻✽✢…⋯⠁-⣿]/g;
+const CLI_PROMPT_PREFIX_PATTERN = /^[❯>$#▪•*]+\s*/u;
+const CLI_STARTUP_NOISE_KEYS = [
+  'recentactivity',
+  'norecentactivity',
+  'apiusagebilling',
+  'debugmodeenabled',
+  'loggingto',
+  'modeltotry',
+  'tipsforgettingstarted',
+  'welcomeback',
+  'claudecodev',
+  'mediummodel',
+  '/inittocreateaclaude.mdfilewithinstructionsforclaude'
+];
+
+function isCliVisualNoiseLine(value: string) {
+  const line = value.trim();
+  if (!line) return false;
+
+  const compact = line.replace(/\s+/g, '');
+  if (!compact) return false;
+
+  if (/^[·•●◦○✳✶✻✽✢…⋯⠁-⣿]+$/u.test(compact)) {
+    return true;
+  }
+
+  const symbolMatches = compact.match(CLI_VISUAL_NOISE_CHARS) ?? [];
+  if (symbolMatches.length === 0) {
+    return false;
+  }
+
+  const withoutNoiseChars = compact.replace(CLI_VISUAL_NOISE_CHARS, '');
+  if (!withoutNoiseChars) {
+    return true;
+  }
+
+  const asciiLetters = withoutNoiseChars.match(/[a-z]/gi) ?? [];
+  const digits = withoutNoiseChars.match(/\d/g) ?? [];
+  const cjkChars = withoutNoiseChars.match(/[\u3400-\u9fff]/g) ?? [];
+  const punctuationOnly = withoutNoiseChars.replace(/[._,;:!?()[\]{}'"`~\-]/g, '');
+
+  if (cjkChars.length > 0) {
+    return false;
+  }
+
+  return symbolMatches.length >= 2 && asciiLetters.length <= 4 && digits.length === 0 && punctuationOnly.length <= 4;
+}
+
 function sanitizeCliText(value: string) {
   return applyBackspaces(stripAnsiSequences(value))
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
@@ -460,6 +546,7 @@ function normalizeCliLines(value: string) {
     .split('\n')
     .map((line) => line.replace(/\t/g, '  ').trim())
     .filter((line) => line.length > 0)
+    .filter((line) => !isCliVisualNoiseLine(line))
     .filter((line) => !CLI_NOISE_LINE_PATTERNS.some((pattern) => pattern.test(line)));
 }
 
@@ -467,6 +554,134 @@ function normalizeCliSingleLine(value: string) {
   const lines = normalizeCliLines(value);
   if (!lines.length) return '';
   return lines.join(' ').replace(/\s+/g, ' ').trim();
+}
+
+function toCliComparableText(value: string) {
+  return value
+    .replace(CLI_PROMPT_PREFIX_PATTERN, '')
+    .replace(/\s+/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+function isCliPromptEchoLine(line: string, promptText: string) {
+  const promptComparable = toCliComparableText(promptText);
+  if (!promptComparable) return false;
+  return toCliComparableText(line) === promptComparable;
+}
+
+function isCliStartupNoiseLine(value: string) {
+  const compact = value.replace(/\s+/g, '').toLowerCase();
+  if (!compact) return false;
+  return CLI_STARTUP_NOISE_KEYS.some((key) => compact.includes(key));
+}
+
+function toCompactComparableText(value: string) {
+  return value.replace(/\s+/g, '').trim().toLowerCase();
+}
+
+function getWorkspacePathVariants(workspaceRoot: string | null) {
+  if (!workspaceRoot) return [] as string[];
+
+  const normalizedRoot = workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+  const variants = [normalizedRoot];
+  const homeMatch = /^(\/Users\/[^/]+)(\/.*)$/.exec(normalizedRoot);
+  if (homeMatch) {
+    variants.push(`~${homeMatch[2]}`);
+  }
+  return variants;
+}
+
+function isCliWorkspaceBannerLine(line: string, workspaceRoot: string | null) {
+  const compactLine = toCompactComparableText(line);
+  if (!compactLine) return false;
+  return getWorkspacePathVariants(workspaceRoot)
+    .map(toCompactComparableText)
+    .some((variant) => variant === compactLine);
+}
+
+function isCliModelBannerLine(line: string) {
+  const compactLine = toCompactComparableText(line);
+  return /^(small|medium|large|opus|sonnet|haiku|gpt[-.0-9a-z]*)\/model$/i.test(compactLine);
+}
+
+function isCliAnswerLikeLine(line: string) {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+
+  const compact = toCompactComparableText(trimmed);
+  if (!compact) return false;
+
+  const cjkChars = trimmed.match(/[\u3400-\u9fff]/g) ?? [];
+  if (cjkChars.length >= 2) {
+    return true;
+  }
+
+  const latinWords = trimmed.match(/[A-Za-z]+(?:'[A-Za-z]+)?/g) ?? [];
+  if (latinWords.length >= 3) {
+    return true;
+  }
+
+  if (latinWords.length >= 1 && /[.!?。！？：:]/.test(trimmed) && compact.length >= 6) {
+    return true;
+  }
+
+  if (/^[-*]\s+/.test(trimmed) && compact.length >= 4) {
+    return true;
+  }
+
+  if (/^\d+\.\s+/.test(trimmed) && compact.length >= 4) {
+    return true;
+  }
+
+  return false;
+}
+
+function hasCliAnswerLikeContent(value: string) {
+  return normalizeCliLines(value).some((line) => isCliAnswerLikeLine(line));
+}
+
+function sliceCliLinesAfterPromptEcho(lines: string[], promptText: string) {
+  const lastPromptIndex = lines.reduce((foundIndex, line, index) => (
+    isCliPromptEchoLine(line, promptText) ? index : foundIndex
+  ), -1);
+
+  return lastPromptIndex >= 0 ? lines.slice(lastPromptIndex + 1) : lines;
+}
+
+function isMeaningfulClaudeReplyLine(value: string, workspaceRoot: string | null) {
+  const line = value.trim();
+  if (!line) return false;
+  if (isCliVisualNoiseLine(line)) return false;
+  if (isCliStartupNoiseLine(line)) return false;
+  if (isCliWorkspaceBannerLine(line, workspaceRoot)) return false;
+  if (isCliModelBannerLine(line)) return false;
+  if (line.startsWith('[user] ')) return false;
+  if (/^\[debug\]/i.test(line)) return false;
+  if (/^user prompt sent:/i.test(line)) return false;
+  if (/^interrupt requested/i.test(line)) return false;
+  if (/^started claude code session$/i.test(line)) return false;
+  if (/^restarted claude code session$/i.test(line)) return false;
+  if (/^restored claude runtime state/i.test(line)) return false;
+  return !CLI_NOISE_LINE_PATTERNS.some((pattern) => pattern.test(line));
+}
+
+function extractClaudeCliTurnTail(rawTail: string, turnStartSnapshot: string) {
+  if (!turnStartSnapshot) return rawTail;
+  if (rawTail.startsWith(turnStartSnapshot)) {
+    return rawTail.slice(turnStartSnapshot.length);
+  }
+
+  const lastUserMarker = rawTail.lastIndexOf('\n[user] ');
+  if (lastUserMarker >= 0) {
+    return rawTail.slice(lastUserMarker);
+  }
+
+  return rawTail;
+}
+
+function dedupeAdjacentLines(lines: string[]) {
+  return lines.filter((line, index, all) => index === 0 || line !== all[index - 1]);
 }
 
 function joinWorkspacePath(base: string, name: string) {
@@ -488,6 +703,11 @@ function toWorkspaceRelativePath(workspaceRoot: string, absoluteOrRelativePath: 
 function isMissingPathError(error: unknown) {
   if (!(error instanceof Error)) return false;
   return /ENOENT|no such file or directory/i.test(error.message);
+}
+
+function isPathInside(basePath: string | null, targetPath: string) {
+  if (!basePath) return false;
+  return targetPath === basePath || targetPath.startsWith(`${basePath}/`) || targetPath.startsWith(`${basePath}\\`);
 }
 
 function buildReadableTerminalSnippet(value: string) {
@@ -573,44 +793,36 @@ function extractRuntimeSkillHints(debugLogTail: string): ClaudeSkillItem[] {
   return [...map.values()].slice(-4);
 }
 
-function buildClaudeCliReplyFromRuntime(state: ClaudeCodeRuntimeState, turnStartedAt: number) {
-  const modelLines = state.events
-    .filter((event) => event.createdAt >= turnStartedAt)
-    .filter((event) => event.kind === 'message')
-    .flatMap((event) => normalizeCliLines(event.text))
-    .map((line) => line.replace(/^\[debug\]\s*/i, '').trim())
-    .filter((line) => line.length > 0)
-    .slice(-16)
-    .filter((line, index, arr) => index === 0 || line !== arr[index - 1]);
+function buildClaudeCliReplyFromRuntime(state: ClaudeCodeRuntimeState, turnStartedAt: number, turnStartSnapshot: string, promptText: string) {
+  const normalizedPrompt = normalizeCliSingleLine(promptText).toLowerCase();
+  const rawTurnLines = sliceCliLinesAfterPromptEcho(
+    normalizeCliLines(extractClaudeCliTurnTail(state.rawTail, turnStartSnapshot)),
+    promptText
+  )
+    .filter((line) => isMeaningfulClaudeReplyLine(line, state.workspaceRoot))
+    .filter((line) => !isCliPromptEchoLine(line, promptText))
+    .filter((line) => !normalizedPrompt || line.toLowerCase() !== normalizedPrompt)
+    .slice(-24);
 
+  const modelLines = dedupeAdjacentLines(rawTurnLines);
   if (modelLines.length) {
     return modelLines.join('\n');
   }
 
   const eventLines = state.events
     .filter((event) => event.createdAt >= turnStartedAt)
-    .filter((event) => event.kind === 'question' || event.kind === 'approval' || event.kind === 'plan')
-    .slice(-6)
+    .filter((event) => event.kind === 'message' || event.kind === 'question' || event.kind === 'approval' || event.kind === 'plan')
     .flatMap((event) => normalizeCliLines(event.text.replace(/^\[debug\]\s*/i, '')))
-    .filter((text) => text.length > 0);
+    .filter((line) => !isCliPromptEchoLine(line, promptText))
+    .filter((line) => isMeaningfulClaudeReplyLine(line, state.workspaceRoot))
+    .filter((line) => !normalizedPrompt || line.toLowerCase() !== normalizedPrompt)
+    .slice(-16);
 
-  if (eventLines.length) {
-    return eventLines.join('\n');
-  }
+  return dedupeAdjacentLines(eventLines).join('\n');
+}
 
-  const fallback: string[] = [state.running ? 'Claude is working...' : 'Claude finished this turn.'];
-  if (state.pendingApproval) {
-    fallback.push(`Approval needed: ${state.pendingApproval}`);
-  }
-  if (state.pendingQuestion) {
-    fallback.push(`Question: ${state.pendingQuestion}`);
-  }
-  if (state.lastPlan.length) {
-    fallback.push('Plan:');
-    fallback.push(...state.lastPlan.slice(-4));
-  }
-
-  return fallback.join('\n');
+function formatTimestamp(value: number) {
+  return new Date(value).toLocaleString();
 }
 
 export function ChatPage(props: {
@@ -671,9 +883,22 @@ export function ChatPage(props: {
   const [skillsLoading, setSkillsLoading] = useState(false);
   const [skillsError, setSkillsError] = useState<string | null>(null);
   const [skillsRefreshTick, setSkillsRefreshTick] = useState(0);
-  const [skillsDrawerOpen, setSkillsDrawerOpen] = useState(false);
+  const [inspectorDrawerOpen, setInspectorDrawerOpen] = useState(false);
+  const [inspectorSection, setInspectorSection] = useState<ClaudeInspectorSection>('overview');
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [historyQuery, setHistoryQuery] = useState('');
+  const [memorySnapshot, setMemorySnapshot] = useState<ClaudeMemorySnapshot | null>(null);
+  const [memoryLoading, setMemoryLoading] = useState(false);
+  const [memoryError, setMemoryError] = useState<string | null>(null);
+  const [memoryRefreshTick, setMemoryRefreshTick] = useState(0);
+  const [selectedInspectorFile, setSelectedInspectorFile] = useState<ClaudeInspectorFile | null>(null);
+  const [selectedInspectorFileContent, setSelectedInspectorFileContent] = useState('');
+  const [selectedInspectorFileLoading, setSelectedInspectorFileLoading] = useState(false);
+  const [selectedInspectorFileError, setSelectedInspectorFileError] = useState<string | null>(null);
+  const [selectedInspectorSkill, setSelectedInspectorSkill] = useState<ClaudeSkillItem | null>(null);
+  const [selectedInspectorSkillContent, setSelectedInspectorSkillContent] = useState('');
+  const [selectedInspectorSkillLoading, setSelectedInspectorSkillLoading] = useState(false);
+  const [selectedInspectorSkillError, setSelectedInspectorSkillError] = useState<string | null>(null);
   const [pendingAgentQuestion, setPendingAgentQuestion] = useState<PendingAgentQuestion | null>(null);
   const [isComposing, setIsComposing] = useState(false);
   const activeStreamRef = useRef<{ close: () => void } | null>(null);
@@ -686,7 +911,38 @@ export function ChatPage(props: {
   const pendingAgentQuestionRejectRef = useRef<((error: Error) => void) | null>(null);
   const claudeCliTurnStartedAtRef = useRef<number | null>(null);
   const claudeCliPendingReplyRef = useRef(false);
+  const claudeCliTurnRawTailSnapshotRef = useRef('');
+  const claudeCliPromptTextRef = useRef('');
+  const claudeCliIdleTimerRef = useRef<number | null>(null);
+  const claudeCliSawVisibleReplyRef = useRef(false);
+  const claudeCliBufferedReplyRef = useRef('');
   const lastMirroredTerminalInputRef = useRef<{ text: string; at: number } | null>(null);
+
+  function clearClaudeCliIdleTimer() {
+    if (claudeCliIdleTimerRef.current === null) return;
+    window.clearTimeout(claudeCliIdleTimerRef.current);
+    claudeCliIdleTimerRef.current = null;
+  }
+
+  function resetClaudeCliTurnTracking() {
+    clearClaudeCliIdleTimer();
+    claudeCliTurnStartedAtRef.current = null;
+    claudeCliPendingReplyRef.current = false;
+    claudeCliTurnRawTailSnapshotRef.current = '';
+    claudeCliPromptTextRef.current = '';
+    claudeCliSawVisibleReplyRef.current = false;
+    claudeCliBufferedReplyRef.current = '';
+  }
+
+  function beginClaudeCliTurn(promptText: string) {
+    clearClaudeCliIdleTimer();
+    claudeCliTurnStartedAtRef.current = Date.now();
+    claudeCliPendingReplyRef.current = true;
+    claudeCliTurnRawTailSnapshotRef.current = claudeRuntimeState.rawTail;
+    claudeCliPromptTextRef.current = promptText;
+    claudeCliSawVisibleReplyRef.current = false;
+    claudeCliBufferedReplyRef.current = '';
+  }
 
   const messages = useMemo(() => threadsByProfile[activeProfileId] ?? loadStoredThread(activeProfileId), [activeProfileId, threadsByProfile]);
 
@@ -716,6 +972,7 @@ export function ChatPage(props: {
       activeStreamRef.current = null;
       agentRunActiveRef.current = false;
       agentCancelRequestedRef.current = true;
+      clearClaudeCliIdleTimer();
       pendingAgentQuestionRejectRef.current?.(new Error('Agent run cancelled'));
     };
   }, []);
@@ -731,12 +988,20 @@ export function ChatPage(props: {
     setPendingAgentQuestion(null);
     pendingAgentQuestionResolveRef.current = null;
     pendingAgentQuestionRejectRef.current = null;
-    claudeCliTurnStartedAtRef.current = null;
-    claudeCliPendingReplyRef.current = false;
+    resetClaudeCliTurnTracking();
     lastMirroredTerminalInputRef.current = null;
-    setSkillsDrawerOpen(false);
+    setInspectorDrawerOpen(false);
+    setInspectorSection('overview');
     setHistoryDrawerOpen(false);
     setHistoryQuery('');
+    setSelectedInspectorFile(null);
+    setSelectedInspectorFileContent('');
+    setSelectedInspectorFileError(null);
+    setSelectedInspectorFileLoading(false);
+    setSelectedInspectorSkill(null);
+    setSelectedInspectorSkillContent('');
+    setSelectedInspectorSkillError(null);
+    setSelectedInspectorSkillLoading(false);
   }, [activeProfileId]);
 
   useEffect(() => {
@@ -764,32 +1029,121 @@ export function ChatPage(props: {
   }, []);
 
   useEffect(() => {
-    if (settings.interactionMode !== 'claude_cli') return;
+    if (settings.interactionMode !== 'claude_cli') {
+      lastMirroredTerminalInputRef.current = null;
+      return;
+    }
+
+    const off = terminalClient.onEvent((event: TerminalEvent) => {
+      if (event.type !== 'input-line') return;
+      if (event.source !== 'terminal') return;
+      if (!claudeRuntimeState.sessionId || event.sessionId !== claudeRuntimeState.sessionId) return;
+
+      const text = normalizeCliSingleLine(event.text);
+      if (!text) return;
+
+      const now = Date.now();
+      const last = lastMirroredTerminalInputRef.current;
+      if (last && last.text === text && now - last.at < 2500) {
+        return;
+      }
+      lastMirroredTerminalInputRef.current = { text, at: now };
+
+      beginClaudeCliTurn(text);
+      setCurrentMessages((prev) => [...prev, { role: 'user', content: text }, { role: 'assistant', content: 'Claude is processing your request...' }]);
+    });
+
+    return () => {
+      off();
+    };
+  }, [claudeRuntimeState.sessionId, settings.interactionMode]);
+
+  useEffect(() => {
+    if (settings.interactionMode !== 'claude_cli') {
+      resetClaudeCliTurnTracking();
+      return;
+    }
     if (!claudeCliPendingReplyRef.current) return;
     const startedAt = claudeCliTurnStartedAtRef.current;
     if (!startedAt) return;
 
-    const nextContent = buildClaudeCliReplyFromRuntime(claudeRuntimeState, startedAt);
-    setCurrentMessages((prev) => {
-      if (prev.length === 0) return prev;
-      const lastIndex = prev.length - 1;
-      const last = prev[lastIndex];
-      if (last.role !== 'assistant') {
-        return [...prev, { role: 'assistant', content: nextContent }];
-      }
-      if (last.content === nextContent) {
-        return prev;
-      }
-      const next = [...prev];
-      next[lastIndex] = { role: 'assistant', content: nextContent };
-      return next;
-    });
-
-    if (!claudeRuntimeState.running) {
-      claudeCliPendingReplyRef.current = false;
-      claudeCliTurnStartedAtRef.current = null;
+    const nextContent = buildClaudeCliReplyFromRuntime(
+      claudeRuntimeState,
+      startedAt,
+      claudeCliTurnRawTailSnapshotRef.current,
+      claudeCliPromptTextRef.current
+    );
+    const hasAnswerLikeContent = nextContent ? hasCliAnswerLikeContent(nextContent) : false;
+    if (nextContent && hasAnswerLikeContent) {
+      claudeCliSawVisibleReplyRef.current = true;
+      claudeCliBufferedReplyRef.current = nextContent;
     }
-  }, [claudeRuntimeState, settings.interactionMode]);
+
+    const turnTail = extractClaudeCliTurnTail(claudeRuntimeState.rawTail, claudeCliTurnRawTailSnapshotRef.current);
+    if (!turnTail.trim()) return;
+    if (!claudeCliSawVisibleReplyRef.current) return;
+
+    clearClaudeCliIdleTimer();
+    claudeCliIdleTimerRef.current = window.setTimeout(() => {
+      const finalReply = claudeCliBufferedReplyRef.current.trim();
+      if (finalReply && hasCliAnswerLikeContent(finalReply)) {
+        setCurrentMessages((prev) => {
+          if (prev.length === 0) return prev;
+          const lastIndex = prev.length - 1;
+          const last = prev[lastIndex];
+          if (last.role !== 'assistant') {
+            return [...prev, { role: 'assistant', content: finalReply }];
+          }
+          if (last.content === finalReply) {
+            return prev;
+          }
+          const next = [...prev];
+          next[lastIndex] = { role: 'assistant', content: finalReply };
+          return next;
+        });
+      }
+      resetClaudeCliTurnTracking();
+    }, hasAnswerLikeContent ? 900 : 1400);
+  }, [claudeRuntimeState.rawTail, claudeRuntimeState.events, settings.interactionMode]);
+
+  useEffect(() => {
+    if (settings.interactionMode !== 'claude_cli') {
+      setMemorySnapshot(null);
+      setMemoryLoading(false);
+      setMemoryError(null);
+      return;
+    }
+
+    const workspaceRoot = claudeRuntimeState.workspaceRoot || workspaceContext.workspaceRoot;
+    if (!workspaceRoot) {
+      setMemorySnapshot(null);
+      setMemoryLoading(false);
+      setMemoryError('No workspace selected');
+      return;
+    }
+
+    let cancelled = false;
+    setMemoryLoading(true);
+    setMemoryError(null);
+
+    void fsClient.getClaudeMemorySnapshot(workspaceRoot)
+      .then((snapshot) => {
+        if (cancelled) return;
+        setMemorySnapshot(snapshot);
+        setMemoryLoading(false);
+        setMemoryError(null);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setMemorySnapshot(null);
+        setMemoryLoading(false);
+        setMemoryError(error instanceof Error ? error.message : 'Unable to inspect Claude memory');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [claudeRuntimeState.workspaceRoot, memoryRefreshTick, settings.interactionMode, workspaceContext.workspaceRoot]);
 
   useEffect(() => {
     if (settings.interactionMode !== 'claude_cli') {
@@ -829,7 +1183,8 @@ export function ChatPage(props: {
             key: `workspace-${nextRelativePath}`,
             name: folderName,
             source: 'workspace',
-            meta: nextRelativePath
+            meta: nextRelativePath,
+            path: entry.path
           });
           continue;
         }
@@ -865,33 +1220,6 @@ export function ChatPage(props: {
       cancelled = true;
     };
   }, [claudeRuntimeState.workspaceRoot, settings.interactionMode, skillsRefreshTick]);
-
-  useEffect(() => {
-    if (settings.interactionMode !== 'claude_cli') return;
-
-    const off = terminalClient.onEvent((event) => {
-      if (event.type !== 'input-line') return;
-      if (event.source !== 'terminal') return;
-      if (!claudeRuntimeState.sessionId || event.sessionId !== claudeRuntimeState.sessionId) return;
-      const text = normalizeCliSingleLine(event.text);
-      if (!text) return;
-
-      const now = Date.now();
-      const last = lastMirroredTerminalInputRef.current;
-      if (last && last.text === text && now - last.at < 4000) {
-        return;
-      }
-      lastMirroredTerminalInputRef.current = { text, at: now };
-
-      claudeCliTurnStartedAtRef.current = Date.now();
-      claudeCliPendingReplyRef.current = true;
-      setCurrentMessages((prev) => [...prev, { role: 'user', content: text }, { role: 'assistant', content: 'Claude is processing your request...' }]);
-    });
-
-    return () => {
-      off();
-    };
-  }, [claudeRuntimeState.sessionId, settings.interactionMode]);
 
   useEffect(() => {
     drawerWidthRef.current = drawerWidth;
@@ -1000,7 +1328,7 @@ export function ChatPage(props: {
   }
 
   function isAgentCancelledError(error: unknown) {
-    return error instanceof Error && error.message === 'Agent run cancelled';
+    return error instanceof Error && /cancelled/i.test(error.message);
   }
 
   function assertAgentNotCancelled() {
@@ -1010,19 +1338,11 @@ export function ChatPage(props: {
   }
 
   async function cancelActiveAgentRun() {
-    if (!isStreaming) return;
+    if (agentRunStatus === 'cancelling') return;
     agentCancelRequestedRef.current = true;
     setAgentRunStatus('cancelling');
-    setAgentActiveCommand(null);
-    appendAgentProgress('Cancellation requested…');
-    activeStreamRef.current?.close();
-    activeStreamRef.current = null;
     rejectPendingAgentQuestion('Agent run cancelled');
-    try {
-      await onInterruptAgentRun();
-    } catch {
-      // ignore interrupt failures; the model stream may already be stopped
-    }
+    await onInterruptAgentRun();
   }
 
   const connectionHint = useMemo(() => {
@@ -1607,14 +1927,11 @@ export function ChatPage(props: {
 
     if (settings.interactionMode === 'claude_cli') {
       try {
-        const startedAt = Date.now();
-        claudeCliTurnStartedAtRef.current = startedAt;
-        claudeCliPendingReplyRef.current = true;
+        beginClaudeCliTurn(outgoingText);
         setCurrentMessages([...messages, { role: 'user', content: outgoingText }, { role: 'assistant', content: 'Claude is processing your request...' }]);
         await onSendPromptToClaudeCli(outgoingText);
       } catch (error) {
-        claudeCliPendingReplyRef.current = false;
-        claudeCliTurnStartedAtRef.current = null;
+        resetClaudeCliTurnTracking();
         setCurrentMessages([...messages, { role: 'user', content: outgoingText }, { role: 'assistant', content: `Error: ${error instanceof Error ? error.message : 'Failed to send prompt to Claude CLI'}` }]);
       } finally {
         setIsStreaming(false);
@@ -1720,7 +2037,6 @@ export function ChatPage(props: {
 
   const showAgentPlanningPanel = settings.interactionMode === 'claude_code' && isStreaming;
   const showAgentActivityDock = showAgentPlanningPanel;
-  const showClaudeCliRuntimeDock = false;
   const agentStatusLabel = agentRunStatus === 'running_command'
       ? 'Running terminal command'
       : agentRunStatus === 'awaiting_input'
@@ -1788,10 +2104,158 @@ export function ChatPage(props: {
         || item.lastAssistantText.toLowerCase().includes(query);
     });
   }, [historyQuery, sessionHistoryItems]);
-  const canOpenSkills = settings.interactionMode === 'claude_cli';
+  const canOpenInspector = settings.interactionMode === 'claude_cli';
+  const memoryInstructionGroups = useMemo<ClaudeMemoryGroup[]>(() => {
+    const snapshot = memorySnapshot;
+    if (!snapshot) return [];
+
+    return [
+      {
+        key: 'project',
+        title: 'Project Instructions',
+        items: snapshot.instructionFiles.filter((item) => item.scope === 'project'),
+        emptyText: 'No project-scoped CLAUDE files or rules found.'
+      },
+      {
+        key: 'user',
+        title: 'User Instructions',
+        items: snapshot.instructionFiles.filter((item) => item.scope === 'user'),
+        emptyText: 'No user-scoped CLAUDE files or rules found.'
+      }
+    ];
+  }, [memorySnapshot]);
+  const recentMemoryTimeline = useMemo<ClaudeInspectorTimelineItem[]>(() => {
+    if (!memorySnapshot) return [];
+    return [...memorySnapshot.instructionFiles, ...memorySnapshot.autoMemoryFiles]
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, 8)
+      .map((item) => ({
+        id: item.id,
+        label: item.relativePath,
+        meta: `${item.scope} · ${item.kind}`,
+        updatedAt: item.updatedAt
+      }));
+  }, [memorySnapshot]);
+  const claudeContextSummaryLines = useMemo(() => {
+    const lines = [
+      `Workspace: ${claudeRuntimeState.workspaceRoot ?? workspaceContext.workspaceRoot ?? 'Not selected'}`,
+      `Runtime: ${claudeRuntimeState.connected ? (claudeRuntimeState.running ? 'Connected and running' : 'Connected and idle') : 'No active Claude CLI session'}`,
+      `Memory: ${memorySnapshot ? `${memorySnapshot.instructionFiles.length} instruction files, ${memorySnapshot.autoMemoryFiles.length} auto memory files, auto memory ${memorySnapshot.autoMemoryEnabled ? 'enabled' : 'disabled'}` : 'Memory snapshot unavailable'}`,
+      `Skills: ${claudeSkills.length ? claudeSkills.slice(0, 4).map((item) => item.name).join(', ') : 'No skills discovered yet'}`
+    ];
+
+    if (claudeRuntimeState.pendingApproval) {
+      lines.push(`Approval pending: ${claudeRuntimeState.pendingApproval}`);
+    } else if (claudeRuntimeState.pendingQuestion) {
+      lines.push(`Question pending: ${claudeRuntimeState.pendingQuestion}`);
+    } else if (claudeRuntimeState.lastPlan.length) {
+      lines.push(`Latest plan: ${claudeRuntimeState.lastPlan.slice(0, 2).join(' | ')}`);
+    }
+
+    if (claudeRuntimeState.resumeInfo.restoredFromStorage) {
+      lines.push(`Resume state restored${snapshotSavedAtText ? ` from snapshot saved at ${snapshotSavedAtText}` : ''}`);
+    }
+
+    return lines;
+  }, [claudeRuntimeState.connected, claudeRuntimeState.lastPlan, claudeRuntimeState.pendingApproval, claudeRuntimeState.pendingQuestion, claudeRuntimeState.resumeInfo.restoredFromStorage, claudeRuntimeState.running, claudeRuntimeState.workspaceRoot, claudeSkills, memorySnapshot, snapshotSavedAtText, workspaceContext.workspaceRoot]);
+
+  async function previewInspectorFile(item: ClaudeInspectorFile) {
+    const workspaceRoot = claudeRuntimeState.workspaceRoot || workspaceContext.workspaceRoot || null;
+    setSelectedInspectorFile(item);
+    setSelectedInspectorFileLoading(true);
+    setSelectedInspectorFileError(null);
+    try {
+      const contents = await fsClient.readClaudeMemoryFile(item.path, workspaceRoot);
+      setSelectedInspectorFileContent(contents);
+      setSelectedInspectorFileLoading(false);
+    } catch (error) {
+      setSelectedInspectorFileContent('');
+      setSelectedInspectorFileLoading(false);
+      setSelectedInspectorFileError(error instanceof Error ? error.message : 'Unable to read file');
+    }
+  }
+
+  async function revealInspectorFile(item: ClaudeInspectorFile) {
+    const workspaceRoot = claudeRuntimeState.workspaceRoot || workspaceContext.workspaceRoot || null;
+    await fsClient.revealClaudePath(item.path, workspaceRoot);
+  }
+
+  async function openInspectorSource(item: ClaudeInspectorFile) {
+    const opened = await workspacePanelRef.current?.openWorkspaceFile(item.path, { reveal: true });
+    if (opened) {
+      closeInspectorDrawer();
+      return;
+    }
+    await previewInspectorFile(item);
+  }
+
+  async function previewInspectorSkill(skill: ClaudeSkillItem) {
+    setSelectedInspectorSkill(skill);
+    setSelectedInspectorSkillError(null);
+    if (!skill.path) {
+      setSelectedInspectorSkillLoading(false);
+      setSelectedInspectorSkillContent(skill.meta ? `${skill.name}\n\n${skill.meta}` : skill.name);
+      return;
+    }
+
+    setSelectedInspectorSkillLoading(true);
+    try {
+      const contents = await fsClient.readWorkspaceTextFile(skill.path);
+      setSelectedInspectorSkillContent(contents);
+      setSelectedInspectorSkillLoading(false);
+    } catch (error) {
+      setSelectedInspectorSkillContent('');
+      setSelectedInspectorSkillLoading(false);
+      setSelectedInspectorSkillError(error instanceof Error ? error.message : 'Unable to read skill file');
+    }
+  }
+
+  async function openInspectorSkillSource(skill: ClaudeSkillItem) {
+    if (!skill.path) {
+      await previewInspectorSkill(skill);
+      return;
+    }
+    const opened = await workspacePanelRef.current?.openWorkspaceFile(skill.path, { reveal: true });
+    if (opened) {
+      closeInspectorDrawer();
+      return;
+    }
+    await previewInspectorSkill(skill);
+  }
+
+  async function revealInspectorSkillSource(skill: ClaudeSkillItem) {
+    if (!skill.path) return;
+    const revealed = await workspacePanelRef.current?.revealWorkspaceFile(skill.path);
+    if (revealed) return;
+    await fsClient.revealClaudePath(skill.path, claudeRuntimeState.workspaceRoot || workspaceContext.workspaceRoot || null);
+  }
+
+  function renderInspectorMemoryItem(item: ClaudeInspectorFile) {
+    return (
+      <div key={item.id} className="claudeMemoryItem">
+        <button type="button" className="claudeMemoryItemBody" onClick={() => void previewInspectorFile(item)}>
+          <div className="claudeMemoryItemTop">
+            <span className={`claudeMemoryBadge scope-${item.scope}`}>{item.scope}</span>
+            <span className={`claudeMemoryBadge kind-${item.kind}`}>{item.kind}</span>
+          </div>
+          <div className="claudeMemoryItemTitle">{item.relativePath}</div>
+          <div className="claudeMemoryMeta">{item.displayPath}</div>
+          <div className="claudeMemoryMeta">{item.lineCount} lines · updated {formatTimestamp(item.updatedAt)}</div>
+          {item.preview ? <pre className="claudeMemoryPreview">{item.preview}</pre> : <div className="claudeMemoryMeta">Empty file</div>}
+        </button>
+        <div className="claudeMemoryItemActions">
+          <button type="button" className="claudeMemoryActionButton" onClick={() => void previewInspectorFile(item)}>View</button>
+          <button type="button" className="claudeMemoryActionButton" onClick={() => void openInspectorSource(item)}>
+            {isPathInside(workspaceContext.workspaceRoot, item.path) ? 'Open' : 'Preview'}
+          </button>
+          <button type="button" className="claudeMemoryActionButton" onClick={() => void revealInspectorFile(item)}>Reveal</button>
+        </div>
+      </div>
+    );
+  }
 
   function openHistoryDrawer() {
-    setSkillsDrawerOpen(false);
+    setInspectorDrawerOpen(false);
     setHistoryDrawerOpen(true);
   }
 
@@ -1799,13 +2263,14 @@ export function ChatPage(props: {
     setHistoryDrawerOpen(false);
   }
 
-  function openSkillsDrawer() {
+  function openInspectorDrawer(section: ClaudeInspectorSection = 'overview') {
     setHistoryDrawerOpen(false);
-    setSkillsDrawerOpen(true);
+    setInspectorSection(section);
+    setInspectorDrawerOpen(true);
   }
 
-  function closeSkillsDrawer() {
-    setSkillsDrawerOpen(false);
+  function closeInspectorDrawer() {
+    setInspectorDrawerOpen(false);
   }
 
   function selectHistorySession(profileId: string) {
@@ -1821,13 +2286,13 @@ export function ChatPage(props: {
     openHistoryDrawer();
   }
 
-  function toggleSkillsDrawer() {
-    if (!canOpenSkills) return;
-    if (skillsDrawerOpen) {
-      closeSkillsDrawer();
+  function toggleInspectorDrawer(section: ClaudeInspectorSection = 'overview') {
+    if (!canOpenInspector) return;
+    if (inspectorDrawerOpen && inspectorSection === section) {
+      closeInspectorDrawer();
       return;
     }
-    openSkillsDrawer();
+    openInspectorDrawer(section);
   }
 
   return (
@@ -1897,7 +2362,7 @@ export function ChatPage(props: {
                       <div className="meta">
                         <div>{m.role}</div>
                       </div>
-                      <div className="bubble">{m.content}</div>
+                      <div className="bubble"><ChatBubbleContent content={m.content} /></div>
                     </div>
                   ))}
                 </div>
@@ -1929,127 +2394,6 @@ export function ChatPage(props: {
               </div>
             ) : null}
 
-            {showClaudeCliRuntimeDock ? (
-              <div className="chatActivityDock">
-                <div className="claudeRuntimePanel">
-                  <div className="claudeRuntimeHeader">
-                    <div>
-                      <div className="cardTitle">Claude Runtime</div>
-                      <div className="claudeRuntimeMeta">
-                        {claudeRuntimeState.connected ? 'Connected to Claude CLI session' : 'No active Claude CLI session'}
-                      </div>
-                    </div>
-                    <div className="claudeRuntimeHeaderActions">
-                      <button type="button" onClick={() => setClaudeCliMinimalMode((v) => !v)}>
-                        {claudeCliMinimalMode ? 'Minimal: On' : 'Minimal: Off'}
-                      </button>
-                      <button type="button" onClick={() => setShowClaudeCliDetails((v) => !v)}>
-                        {showClaudeCliDetails ? 'Hide Details' : 'Show Details'}
-                      </button>
-                      <div className="pill" style={{ opacity: 1 }}>
-                        {claudeRuntimeState.running ? 'Running' : 'Idle'}
-                      </div>
-                    </div>
-                  </div>
-
-                  {!claudeCliMinimalMode && !claudeRuntimeState.capabilities.interactiveStructuredOutput ? (
-                    <div className="claudeRuntimeHint">
-                      Interactive Claude CLI does not expose documented structured events. This panel shows best-effort runtime signals.
-                    </div>
-                  ) : null}
-
-                  {!claudeCliMinimalMode && showClaudeCliDetails && claudeRuntimeState.debugLogPath ? (
-                    <div className="claudeRuntimeMetaRow">
-                      <span className="claudeRuntimeMetaLabel">Debug log</span>
-                      <span className="claudeRuntimeMetaValue">{claudeRuntimeState.debugLogPath}</span>
-                    </div>
-                  ) : null}
-
-                  {!claudeCliMinimalMode && showClaudeCliDetails ? (
-                    <div className="claudeRuntimeMetaRow">
-                      <span className="claudeRuntimeMetaLabel">Signal source</span>
-                      <span className="claudeRuntimeMetaValue">{claudeRuntimeState.capabilities.source}</span>
-                    </div>
-                  ) : null}
-
-                  {!claudeCliMinimalMode && claudeRuntimeState.resumeInfo.restoredFromStorage ? (
-                    <div className="claudeRuntimeSignal resume">
-                      <div className="cardTitle">Workspace Resume</div>
-                      <div className="claudeRuntimeMetaRow">
-                        <span className="claudeRuntimeMetaLabel">Snapshot session</span>
-                        <span className="claudeRuntimeMetaValue">{claudeRuntimeState.resumeInfo.snapshotSessionId ?? 'unknown'}</span>
-                      </div>
-                      <div className="claudeRuntimeMetaRow">
-                        <span className="claudeRuntimeMetaLabel">Snapshot saved</span>
-                        <span className="claudeRuntimeMetaValue">{snapshotSavedAtText ?? 'unknown'}</span>
-                      </div>
-                      <div className="claudeRuntimeMetaRow">
-                        <span className="claudeRuntimeMetaLabel">Restored in UI</span>
-                        <span className="claudeRuntimeMetaValue">{restoredAtText ?? 'unknown'}</span>
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {claudeRuntimeState.pendingApproval ? (
-                    <div className="claudeRuntimeSignal approval">
-                      <div className="cardTitle">Approval</div>
-                      <div>{claudeRuntimeState.pendingApproval}</div>
-                    </div>
-                  ) : null}
-
-                  {claudeRuntimeState.pendingQuestion ? (
-                    <div className="claudeRuntimeSignal question">
-                      <div className="cardTitle">Question</div>
-                      <div>{claudeRuntimeState.pendingQuestion}</div>
-                    </div>
-                  ) : null}
-
-                  {claudeRuntimeState.lastPlan.length ? (
-                    <div className="claudeRuntimeSignal plan">
-                      <div className="cardTitle">Last Plan</div>
-                      <div className="claudeRuntimeList">
-                        {claudeRuntimeState.lastPlan.map((line, index) => (
-                          <div key={`${index}-${line.slice(0, 16)}`} className="claudeRuntimeListItem">{line}</div>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {!claudeCliMinimalMode && claudeRuntimeState.diffDetected ? (
-                    <div className="claudeRuntimeSignal diff">
-                      <div className="cardTitle">Diff Activity</div>
-                      <div>Recent terminal output included diff markers.</div>
-                    </div>
-                  ) : null}
-
-                  {claudeRuntimeEvents.length ? (
-                    <div className="claudeRuntimeSection">
-                      <div className="cardTitle">Recent Events</div>
-                      <div className="claudeRuntimeList">
-                        {claudeRuntimeEvents.map((event, index) => (
-                          <div key={`${event.createdAt}-${index}`} className={`claudeRuntimeEvent kind-${event.kind}`}>
-                            <span className="claudeRuntimeEventKind">{event.kind}</span>
-                            <span>{event.text}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {!claudeCliMinimalMode && showClaudeCliDetails && claudeRuntimeRawTail ? (
-                    <pre className="claudeRuntimeRaw">{claudeRuntimeRawTail}</pre>
-                  ) : null}
-
-                  {!claudeCliMinimalMode && showClaudeCliDetails && claudeRuntimeState.debugLogTail ? (
-                    <div className="claudeRuntimeSection">
-                      <div className="cardTitle">Debug Log Tail</div>
-                      <pre className="claudeRuntimeRaw">{claudeRuntimeState.debugLogTail}</pre>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
-
             <aside className="assistantSideBar" aria-label="Assistant tools">
               <button
                 type="button"
@@ -2066,15 +2410,17 @@ export function ChatPage(props: {
               </button>
               <button
                 type="button"
-                className={`assistantSideBarItem ${skillsDrawerOpen ? 'active' : ''}`}
-                onClick={toggleSkillsDrawer}
-                disabled={!canOpenSkills}
-                title={canOpenSkills ? (skillsDrawerOpen ? 'Hide skills' : 'Show skills') : 'Skills are available in Claude CLI mode'}
-                aria-label={canOpenSkills ? (skillsDrawerOpen ? 'Hide skills' : 'Show skills') : 'Skills unavailable in current mode'}
+                className={`assistantSideBarItem ${inspectorDrawerOpen ? 'active' : ''}`}
+                onClick={() => toggleInspectorDrawer('overview')}
+                disabled={!canOpenInspector}
+                title={canOpenInspector ? (inspectorDrawerOpen ? 'Hide Claude Inspector' : 'Show Claude Inspector') : 'Claude Inspector is available in Claude CLI mode'}
+                aria-label={canOpenInspector ? (inspectorDrawerOpen ? 'Hide Claude Inspector' : 'Show Claude Inspector') : 'Claude Inspector unavailable in current mode'}
               >
                 <svg className="assistantSideBarGlyph" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M6 6.5h12a1.5 1.5 0 0 1 1.5 1.5v8a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 16V8A1.5 1.5 0 0 1 6 6.5Z" />
+                  <path d="M8 10h8" />
+                  <path d="M8 13h5" />
                   <path d="M12 3l1.7 4.3L18 9l-4.3 1.7L12 15l-1.7-4.3L6 9l4.3-1.7L12 3Z" />
-                  <path d="M18 14l.9 2.1L21 17l-2.1.9L18 20l-.9-2.1L15 17l2.1-.9L18 14Z" />
                 </svg>
               </button>
             </aside>
@@ -2083,37 +2429,364 @@ export function ChatPage(props: {
               <>
                 <button
                   type="button"
-                  className={skillsDrawerOpen ? 'skillsDrawerBackdrop open' : 'skillsDrawerBackdrop'}
-                  aria-label="Close skills panel"
-                  onClick={closeSkillsDrawer}
+                  className={inspectorDrawerOpen ? 'inspectorDrawerBackdrop open' : 'inspectorDrawerBackdrop'}
+                  aria-label="Close Claude inspector panel"
+                  onClick={closeInspectorDrawer}
                 />
-                <aside className={skillsDrawerOpen ? 'skillsDrawerPanel open' : 'skillsDrawerPanel'}>
-                  <div className="claudeSkillsPanel">
-                    <div className="claudeSkillsHeader">
+                <aside className={inspectorDrawerOpen ? 'inspectorDrawerPanel open' : 'inspectorDrawerPanel'}>
+                  <div className="claudeInspectorPanel">
+                    <div className="claudeInspectorHeader">
                       <div>
-                        <div className="cardTitle">Claude Code Skills</div>
-                        <div className="claudeSkillsMeta">Path: <code>.claude/skills</code></div>
+                        <div className="cardTitle">Claude Inspector</div>
+                        <div className="claudeMemoryMeta">Unified runtime, memory, and skills view for the current Claude CLI workspace.</div>
                       </div>
-                      <div style={{ display: 'flex', gap: 8 }}>
-                        <button type="button" onClick={() => setSkillsRefreshTick((v) => v + 1)} disabled={skillsLoading}>
-                          {skillsLoading ? 'Refreshing…' : 'Refresh'}
+                      <div className="claudeInspectorActions">
+                        <button type="button" onClick={() => setShowClaudeCliDetails((v) => !v)}>
+                          {showClaudeCliDetails ? 'Hide Details' : 'Show Details'}
                         </button>
-                        <button type="button" onClick={closeSkillsDrawer}>Close</button>
+                        <button type="button" onClick={() => setClaudeCliMinimalMode((v) => !v)}>
+                          {claudeCliMinimalMode ? 'Minimal: On' : 'Minimal: Off'}
+                        </button>
+                        <button type="button" onClick={() => {
+                          setMemoryRefreshTick((value) => value + 1);
+                          setSkillsRefreshTick((value) => value + 1);
+                        }} disabled={memoryLoading || skillsLoading}>
+                          {memoryLoading || skillsLoading ? 'Refreshing…' : 'Refresh'}
+                        </button>
+                        <button type="button" onClick={closeInspectorDrawer}>Close</button>
                       </div>
                     </div>
-                    {skillsError ? <div className="claudeSkillsMeta">{skillsError}</div> : null}
-                    {!skillsError ? (
-                      <div className="claudeSkillsMeta">{claudeSkills.length ? `${claudeSkills.length} skill entries` : 'No skills discovered yet'}</div>
+
+                    <div className="claudeInspectorTabs" role="tablist" aria-label="Claude inspector sections">
+                      <button type="button" className={inspectorSection === 'overview' ? 'claudeInspectorTab active' : 'claudeInspectorTab'} onClick={() => setInspectorSection('overview')}>
+                        Overview
+                      </button>
+                      <button type="button" className={inspectorSection === 'memory' ? 'claudeInspectorTab active' : 'claudeInspectorTab'} onClick={() => setInspectorSection('memory')}>
+                        Memory
+                      </button>
+                      <button type="button" className={inspectorSection === 'skills' ? 'claudeInspectorTab active' : 'claudeInspectorTab'} onClick={() => setInspectorSection('skills')}>
+                        Skills
+                      </button>
+                    </div>
+
+                    {inspectorSection === 'overview' ? (
+                      <div className="claudeInspectorBody">
+                        <div className="claudeInspectorSummaryGrid">
+                          <div className="claudeMemorySummaryCard">
+                            <span className="claudeMemorySummaryLabel">Session</span>
+                            <span className="claudeMemorySummaryValue">{claudeRuntimeState.connected ? 'Connected' : 'Inactive'}</span>
+                          </div>
+                          <div className="claudeMemorySummaryCard">
+                            <span className="claudeMemorySummaryLabel">Runtime</span>
+                            <span className="claudeMemorySummaryValue">{claudeRuntimeState.running ? 'Running' : 'Idle'}</span>
+                          </div>
+                          <div className="claudeMemorySummaryCard">
+                            <span className="claudeMemorySummaryLabel">Events</span>
+                            <span className="claudeMemorySummaryValue">{claudeRuntimeState.events.length} recent signals</span>
+                          </div>
+                          <div className="claudeMemorySummaryCard">
+                            <span className="claudeMemorySummaryLabel">Skills</span>
+                            <span className="claudeMemorySummaryValue">{claudeSkills.length} discovered</span>
+                          </div>
+                          <div className="claudeMemorySummaryCard">
+                            <span className="claudeMemorySummaryLabel">Instruction files</span>
+                            <span className="claudeMemorySummaryValue">{memorySnapshot?.instructionFiles.length ?? 0} loaded sources</span>
+                          </div>
+                          <div className="claudeMemorySummaryCard">
+                            <span className="claudeMemorySummaryLabel">Auto memory files</span>
+                            <span className="claudeMemorySummaryValue">{memorySnapshot?.autoMemoryFiles.length ?? 0} notes</span>
+                          </div>
+                        </div>
+
+                        <div className="claudeInspectorSectionCallout">
+                          <div className="cardTitle">Current Context Summary</div>
+                          <div className="claudeInspectorSummaryList">
+                            {claudeContextSummaryLines.map((line) => (
+                              <div key={line} className="claudeInspectorSummaryLine">{line}</div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="claudeInspectorSectionCallout">
+                          <div className="cardTitle">Recent Memory Activity</div>
+                          {recentMemoryTimeline.length ? (
+                            <div className="claudeInspectorTimelineList">
+                              {recentMemoryTimeline.map((item) => (
+                                <div key={item.id} className="claudeInspectorTimelineItem">
+                                  <div className="claudeInspectorTimelineTop">
+                                    <span className="claudeInspectorTimelineLabel">{item.label}</span>
+                                    <span className="claudeInspectorTimelineTime">{formatTimestamp(item.updatedAt)}</span>
+                                  </div>
+                                  <div className="claudeInspectorSectionCalloutMeta">{item.meta}</div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="claudeInspectorSectionCalloutMeta">No memory activity detected yet.</div>
+                          )}
+                        </div>
+
+                        <div className="claudeRuntimePanel">
+                          <div className="claudeRuntimeHeader">
+                            <div>
+                              <div className="cardTitle">Claude Runtime</div>
+                              <div className="claudeRuntimeMeta">
+                                {claudeRuntimeState.connected ? 'Connected to Claude CLI session' : 'No active Claude CLI session'}
+                              </div>
+                            </div>
+                            <div className="claudeRuntimeHeaderActions">
+                              <div className="pill" style={{ opacity: 1 }}>
+                                {claudeRuntimeState.running ? 'Running' : 'Idle'}
+                              </div>
+                            </div>
+                          </div>
+
+                          {!claudeCliMinimalMode && !claudeRuntimeState.capabilities.interactiveStructuredOutput ? (
+                            <div className="claudeRuntimeHint">
+                              Interactive Claude CLI does not expose documented structured events. This panel shows best-effort runtime signals.
+                            </div>
+                          ) : null}
+
+                          {!claudeCliMinimalMode && showClaudeCliDetails && claudeRuntimeState.debugLogPath ? (
+                            <div className="claudeRuntimeMetaRow">
+                              <span className="claudeRuntimeMetaLabel">Debug log</span>
+                              <span className="claudeRuntimeMetaValue">{claudeRuntimeState.debugLogPath}</span>
+                            </div>
+                          ) : null}
+
+                          {!claudeCliMinimalMode && showClaudeCliDetails ? (
+                            <div className="claudeRuntimeMetaRow">
+                              <span className="claudeRuntimeMetaLabel">Signal source</span>
+                              <span className="claudeRuntimeMetaValue">{claudeRuntimeState.capabilities.source}</span>
+                            </div>
+                          ) : null}
+
+                          {!claudeCliMinimalMode && claudeRuntimeState.resumeInfo.restoredFromStorage ? (
+                            <div className="claudeRuntimeSignal resume">
+                              <div className="cardTitle">Workspace Resume</div>
+                              <div className="claudeRuntimeMetaRow">
+                                <span className="claudeRuntimeMetaLabel">Snapshot session</span>
+                                <span className="claudeRuntimeMetaValue">{claudeRuntimeState.resumeInfo.snapshotSessionId ?? 'unknown'}</span>
+                              </div>
+                              <div className="claudeRuntimeMetaRow">
+                                <span className="claudeRuntimeMetaLabel">Snapshot saved</span>
+                                <span className="claudeRuntimeMetaValue">{snapshotSavedAtText ?? 'unknown'}</span>
+                              </div>
+                              <div className="claudeRuntimeMetaRow">
+                                <span className="claudeRuntimeMetaLabel">Restored in UI</span>
+                                <span className="claudeRuntimeMetaValue">{restoredAtText ?? 'unknown'}</span>
+                              </div>
+                            </div>
+                          ) : null}
+
+                          {claudeRuntimeState.pendingApproval ? (
+                            <div className="claudeRuntimeSignal approval">
+                              <div className="cardTitle">Approval</div>
+                              <div>{claudeRuntimeState.pendingApproval}</div>
+                            </div>
+                          ) : null}
+
+                          {claudeRuntimeState.pendingQuestion ? (
+                            <div className="claudeRuntimeSignal question">
+                              <div className="cardTitle">Question</div>
+                              <div>{claudeRuntimeState.pendingQuestion}</div>
+                            </div>
+                          ) : null}
+
+                          {claudeRuntimeState.lastPlan.length ? (
+                            <div className="claudeRuntimeSignal plan">
+                              <div className="cardTitle">Last Plan</div>
+                              <div className="claudeRuntimeList">
+                                {claudeRuntimeState.lastPlan.map((line, index) => (
+                                  <div key={`${index}-${line.slice(0, 16)}`} className="claudeRuntimeListItem">{line}</div>
+                                ))}
+                              </div>
+                            </div>
+                          ) : null}
+
+                          {!claudeCliMinimalMode && claudeRuntimeState.diffDetected ? (
+                            <div className="claudeRuntimeSignal diff">
+                              <div className="cardTitle">Diff Activity</div>
+                              <div>Recent terminal output included diff markers.</div>
+                            </div>
+                          ) : null}
+
+                          {claudeRuntimeEvents.length ? (
+                            <div className="claudeRuntimeSection">
+                              <div className="cardTitle">Recent Events</div>
+                              <div className="claudeRuntimeList">
+                                {claudeRuntimeEvents.map((event, index) => (
+                                  <div key={`${event.createdAt}-${index}`} className={`claudeRuntimeEvent kind-${event.kind}`}>
+                                    <span className="claudeRuntimeEventKind">{event.kind}</span>
+                                    <span>{event.text}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ) : null}
+
+                          {!claudeCliMinimalMode && showClaudeCliDetails && claudeRuntimeRawTail ? (
+                            <pre className="claudeRuntimeRaw">{claudeRuntimeRawTail}</pre>
+                          ) : null}
+
+                          {!claudeCliMinimalMode && showClaudeCliDetails && claudeRuntimeState.debugLogTail ? (
+                            <div className="claudeRuntimeSection">
+                              <div className="cardTitle">Debug Log Tail</div>
+                              <pre className="claudeRuntimeRaw">{claudeRuntimeState.debugLogTail}</pre>
+                            </div>
+                          ) : null}
+                        </div>
+
+                        {memorySnapshot ? (
+                          <div className="claudeInspectorSectionCallout">
+                            <div className="cardTitle">Memory Snapshot</div>
+                            <div className="claudeMemoryMeta">Auto memory is {memorySnapshot.autoMemoryEnabled ? 'enabled' : 'disabled'} for this workspace.</div>
+                            <div className="claudeMemoryMeta">Root: {memorySnapshot.autoMemoryRoot}</div>
+                          </div>
+                        ) : null}
+                      </div>
                     ) : null}
-                    {claudeSkills.length ? (
-                      <div className="claudeSkillsList">
-                        {claudeSkills.map((skill) => (
-                          <div key={skill.key} className="claudeSkillsItem">
-                            <span className={`claudeSkillsBadge source-${skill.source}`}>{skill.source}</span>
-                            <span className="claudeSkillsName">{skill.name}</span>
-                            {skill.meta ? <span className="claudeSkillsMeta">{skill.meta}</span> : null}
+
+                    {inspectorSection === 'memory' ? (
+                      <div className="claudeInspectorBody">
+                        {memorySnapshot ? (
+                          <div className="claudeMemorySummaryGrid">
+                            <div className="claudeMemorySummaryCard">
+                              <span className="claudeMemorySummaryLabel">Workspace</span>
+                              <span className="claudeMemorySummaryValue">{memorySnapshot.workspaceRoot}</span>
+                            </div>
+                            <div className="claudeMemorySummaryCard">
+                              <span className="claudeMemorySummaryLabel">Auto memory</span>
+                              <span className="claudeMemorySummaryValue">{memorySnapshot.autoMemoryEnabled ? 'Enabled' : 'Disabled'}</span>
+                            </div>
+                            <div className="claudeMemorySummaryCard">
+                              <span className="claudeMemorySummaryLabel">Memory root</span>
+                              <span className="claudeMemorySummaryValue">{memorySnapshot.autoMemoryRoot}</span>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {memoryError ? <div className="claudeMemoryNotice error">{memoryError}</div> : null}
+                        {!memoryError && memoryLoading ? <div className="claudeMemoryNotice">Loading Claude memory…</div> : null}
+                        {!memoryError && !memoryLoading && memorySnapshot?.notices.length ? (
+                          <div className="claudeMemoryNoticeGroup">
+                            {memorySnapshot.notices.map((notice) => (
+                              <div key={notice} className="claudeMemoryNotice">{notice}</div>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        {memoryInstructionGroups.map((group) => (
+                          <div key={group.key} className="claudeMemorySection">
+                            <div className="claudeMemorySectionHeader">
+                              <div className="cardTitle">{group.title}</div>
+                              <div className="claudeMemoryMeta">{group.items.length} files</div>
+                            </div>
+                            {group.items.length ? (
+                              <div className="claudeMemoryList">
+                                {group.items.map((item) => renderInspectorMemoryItem(item))}
+                              </div>
+                            ) : (
+                              <div className="claudeMemoryEmpty">{group.emptyText}</div>
+                            )}
                           </div>
                         ))}
+
+                        <div className="claudeMemorySection">
+                          <div className="claudeMemorySectionHeader">
+                            <div className="cardTitle">Auto Memory</div>
+                            <div className="claudeMemoryMeta">{memorySnapshot?.autoMemoryFiles.length ?? 0} files</div>
+                          </div>
+                          {memorySnapshot?.autoMemoryFiles.length ? (
+                            <div className="claudeMemoryList">
+                              {memorySnapshot.autoMemoryFiles.map((item) => renderInspectorMemoryItem(item))}
+                            </div>
+                          ) : (
+                            <div className="claudeMemoryEmpty">No auto memory files found yet for this workspace.</div>
+                          )}
+                        </div>
+
+                        {selectedInspectorFile ? (
+                          <div className="claudeInspectorViewer">
+                            <div className="claudeInspectorViewerHeader">
+                              <div>
+                                <div className="cardTitle">{selectedInspectorFile.relativePath}</div>
+                                <div className="claudeMemoryMeta">{selectedInspectorFile.displayPath}</div>
+                              </div>
+                              <div className="claudeInspectorActions">
+                                <button type="button" onClick={() => void openInspectorSource(selectedInspectorFile)}>
+                                  {isPathInside(workspaceContext.workspaceRoot, selectedInspectorFile.path) ? 'Open in Workspace' : 'Refresh Preview'}
+                                </button>
+                                <button type="button" onClick={() => void revealInspectorFile(selectedInspectorFile)}>Reveal</button>
+                              </div>
+                            </div>
+                            {selectedInspectorFileError ? <div className="claudeMemoryNotice error">{selectedInspectorFileError}</div> : null}
+                            {selectedInspectorFileLoading ? <div className="claudeMemoryNotice">Loading full contents…</div> : null}
+                            {!selectedInspectorFileLoading && !selectedInspectorFileError ? (
+                              <pre className="claudeInspectorViewerContent">{selectedInspectorFileContent || '(empty file)'}</pre>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {inspectorSection === 'skills' ? (
+                      <div className="claudeInspectorBody">
+                        <div className="claudeSkillsPanel claudeInspectorEmbeddedPanel">
+                          <div className="claudeSkillsHeader">
+                            <div>
+                              <div className="cardTitle">Claude Code Skills</div>
+                              <div className="claudeSkillsMeta">Path: <code>.claude/skills</code></div>
+                            </div>
+                            <div className="claudeInspectorSectionCalloutMeta">{claudeSkills.length} entries</div>
+                          </div>
+                          {skillsError ? <div className="claudeSkillsMeta">{skillsError}</div> : null}
+                          {!skillsError ? (
+                            <div className="claudeSkillsMeta">{claudeSkills.length ? `${claudeSkills.length} skill entries` : 'No skills discovered yet'}</div>
+                          ) : null}
+                          {claudeSkills.length ? (
+                            <div className="claudeSkillsList">
+                              {claudeSkills.map((skill) => (
+                                <div key={skill.key} className="claudeSkillsItem">
+                                  <button type="button" className="claudeSkillsItemBody" onClick={() => void previewInspectorSkill(skill)}>
+                                    <span className={`claudeSkillsBadge source-${skill.source}`}>{skill.source}</span>
+                                    <span className="claudeSkillsName">{skill.name}</span>
+                                    {skill.meta ? <span className="claudeSkillsMeta">{skill.meta}</span> : null}
+                                  </button>
+                                  <div className="claudeSkillsActions">
+                                    <button type="button" className="claudeMemoryActionButton" onClick={() => void previewInspectorSkill(skill)}>View</button>
+                                    <button type="button" className="claudeMemoryActionButton" onClick={() => void openInspectorSkillSource(skill)}>
+                                      {skill.path ? 'Open' : 'Preview'}
+                                    </button>
+                                    <button type="button" className="claudeMemoryActionButton" onClick={() => void revealInspectorSkillSource(skill)} disabled={!skill.path}>Reveal</button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+
+                        {selectedInspectorSkill ? (
+                          <div className="claudeInspectorViewer">
+                            <div className="claudeInspectorViewerHeader">
+                              <div>
+                                <div className="cardTitle">{selectedInspectorSkill.name}</div>
+                                <div className="claudeMemoryMeta">{selectedInspectorSkill.meta ?? selectedInspectorSkill.source}</div>
+                              </div>
+                              <div className="claudeInspectorActions">
+                                <button type="button" onClick={() => void openInspectorSkillSource(selectedInspectorSkill)}>
+                                  {selectedInspectorSkill.path ? 'Open in Workspace' : 'Refresh Preview'}
+                                </button>
+                                <button type="button" onClick={() => void revealInspectorSkillSource(selectedInspectorSkill)} disabled={!selectedInspectorSkill.path}>Reveal</button>
+                              </div>
+                            </div>
+                            {selectedInspectorSkillError ? <div className="claudeMemoryNotice error">{selectedInspectorSkillError}</div> : null}
+                            {selectedInspectorSkillLoading ? <div className="claudeMemoryNotice">Loading full contents…</div> : null}
+                            {!selectedInspectorSkillLoading && !selectedInspectorSkillError ? (
+                              <pre className="claudeInspectorViewerContent">{selectedInspectorSkillContent || '(empty skill)'}</pre>
+                            ) : null}
+                          </div>
+                        ) : null}
                       </div>
                     ) : null}
                   </div>

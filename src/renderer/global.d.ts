@@ -16,6 +16,30 @@ type WorkspaceEvent =
   | { type: 'changed'; eventType: string; path: string }
   | { type: 'error'; message: string };
 
+type ClaudeMemoryFile = {
+  id: string;
+  path: string;
+  displayPath: string;
+  relativePath: string;
+  name: string;
+  scope: 'user' | 'project' | 'auto';
+  kind: 'claude' | 'local' | 'rule' | 'memory';
+  lineCount: number;
+  preview: string;
+  updatedAt: number;
+  size: number;
+};
+
+type ClaudeMemorySnapshot = {
+  workspaceRoot: string;
+  projectKey: string;
+  autoMemoryEnabled: boolean;
+  autoMemoryRoot: string;
+  instructionFiles: ClaudeMemoryFile[];
+  autoMemoryFiles: ClaudeMemoryFile[];
+  notices: string[];
+};
+
 declare global {
   interface Window {
     assistantDesk: {
@@ -30,6 +54,9 @@ declare global {
       readWorkspaceFile(filePath: string): Promise<{ kind: 'text' | 'binary'; contents: string | null; contentsEncoding: 'utf8' | 'base64' | null; mimeType: string | null; readOnly: boolean; size: number }>;
       writeWorkspaceTextFile(filePath: string, contents: string): Promise<void>;
       openArbitraryTextFile(): Promise<{ path: string; contents: string } | null>;
+      getClaudeMemorySnapshot(workspaceRoot?: string | null): Promise<ClaudeMemorySnapshot>;
+      readClaudeMemoryFile(filePath: string, workspaceRoot?: string | null): Promise<string>;
+      revealClaudePath(filePath: string, workspaceRoot?: string | null): Promise<boolean>;
       getTerminalState(): Promise<TerminalState>;
       createTerminalSession(cwd?: string, title?: string): Promise<number>;
       setActiveTerminalSession(sessionId: number): Promise<void>;

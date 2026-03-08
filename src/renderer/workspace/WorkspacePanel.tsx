@@ -8,7 +8,7 @@ import rehypeSlug from 'rehype-slug';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import { fsClient } from '../fsClient';
-import { openAgentPatchStream, openInlineCompletionStream } from '../wsClient';
+import { CORE_SERVER_URL, openAgentPatchStream, openInlineCompletionStream } from '../wsClient';
 import type { ProviderId } from '../../shared/types';
 
 type DirEntry = { name: string; path: string; kind: 'file' | 'dir' };
@@ -38,6 +38,15 @@ type ActiveJavaInfo = {
   typeName: string | null;
   hasMainMethod: boolean;
   hasTestMethods: boolean;
+};
+
+type WelcomeShortcutItem = {
+  id: string;
+  title: string;
+  description: string;
+  keys: string[];
+  disabled?: boolean;
+  run: () => void | Promise<void>;
 };
 
 let mermaidInitialized = false;
@@ -201,6 +210,29 @@ function getExplorerFileIcon(filePath: string): ExplorerFileIcon {
   }
 }
 
+function getWelcomeFilePriority(entry: DirEntry) {
+  const lowerName = entry.name.toLowerCase();
+  if (lowerName === 'readme.md') return 100;
+  if (lowerName === 'package.json') return 95;
+  if (lowerName === 'pom.xml') return 92;
+  if (lowerName === 'build.gradle' || lowerName === 'build.gradle.kts') return 90;
+  if (lowerName === 'vite.config.ts') return 88;
+  if (lowerName === 'index.html') return 86;
+  if (lowerName.startsWith('tsconfig')) return 84;
+  if (entry.kind === 'file') return 60;
+  return 10;
+}
+
+function formatShortcutLabel(keys: string[], isMacLike: boolean) {
+  const mapped = keys.map((key) => {
+    if (key === 'Mod') return isMacLike ? '⌘' : 'Ctrl';
+    if (key === 'Shift') return isMacLike ? '⇧' : 'Shift';
+    if (key === 'Alt') return isMacLike ? '⌥' : 'Alt';
+    return key.toUpperCase();
+  });
+  return mapped.join(isMacLike ? ' ' : ' + ');
+}
+
 function isMarkdownFile(filePath: string | null) {
   if (!filePath) return false;
   const lower = getFileName(filePath).toLowerCase();
@@ -210,6 +242,117 @@ function isMarkdownFile(filePath: string | null) {
 function isPdfFile(filePath: string | null) {
   if (!filePath) return false;
   return getFileName(filePath).toLowerCase().endsWith('.pdf');
+}
+
+function isHtmlFile(filePath: string | null) {
+  if (!filePath) return false;
+  const lower = getFileName(filePath).toLowerCase();
+  return lower.endsWith('.html') || lower.endsWith('.htm');
+}
+
+function toWorkspaceRelativePath(workspaceRoot: string, absoluteOrRelativePath: string) {
+  const root = workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+  const target = absoluteOrRelativePath.replace(/\\/g, '/');
+  if (target === root) return '.';
+  if (target.startsWith(`${root}/`)) {
+    return target.slice(root.length + 1);
+  }
+  return target.replace(/^\/+/, '');
+}
+
+function encodeWorkspacePreviewToken(value: string) {
+  const encoded = btoa(unescape(encodeURIComponent(value)));
+  return encoded.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function encodePreviewPath(pathValue: string) {
+  return pathValue.split('/').filter(Boolean).map(encodeURIComponent).join('/');
+}
+
+function buildWorkspacePreviewRootUrl(workspaceRoot: string) {
+  const rootToken = encodeWorkspacePreviewToken(workspaceRoot);
+  return `${CORE_SERVER_URL}/workspace-preview/${rootToken}`;
+}
+
+function buildWorkspacePreviewBaseUrl(workspaceRoot: string, filePath: string) {
+  const relativePath = toWorkspaceRelativePath(workspaceRoot, filePath);
+  const relativeDir = relativePath.includes('/') ? relativePath.slice(0, relativePath.lastIndexOf('/') + 1) : '';
+  const encodedDir = encodePreviewPath(relativeDir);
+  return encodedDir
+    ? `${buildWorkspacePreviewRootUrl(workspaceRoot)}/${encodedDir}`
+    : `${buildWorkspacePreviewRootUrl(workspaceRoot)}/`;
+}
+
+function escapeHtmlAttribute(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function injectBaseHrefIntoHtml(html: string, baseHref: string) {
+  const baseTag = `<base href="${escapeHtmlAttribute(baseHref)}">`;
+  if (/<base\s/i.test(html)) {
+    return html;
+  }
+  if (/<head[^>]*>/i.test(html)) {
+    return html.replace(/<head([^>]*)>/i, `<head$1>${baseTag}`);
+  }
+  if (/<html[^>]*>/i.test(html)) {
+    return html.replace(/<html([^>]*)>/i, `<html$1><head>${baseTag}</head>`);
+  }
+  return `<!doctype html><html><head>${baseTag}</head><body>${html}</body></html>`;
+}
+
+function rewriteRootRelativeHtmlUrls(html: string, workspaceRoot: string) {
+  const previewRootUrl = buildWorkspacePreviewRootUrl(workspaceRoot);
+  return html.replace(/\b(src|href|action|poster)=(['"])(\/[^'"#?]+(?:[?#][^'"]*)?)\2/gi, (_match, attr, quote, url) => {
+    const rewritten = `${previewRootUrl}/${encodePreviewPath(url.slice(1))}`;
+    return `${attr}=${quote}${rewritten}${quote}`;
+  });
+}
+
+function isLikelyViteSourceHtml(html: string) {
+  return /@vite\/client|<script[^>]+type=['"]module['"][^>]+src=['"]\/src\//i.test(html);
+}
+
+function buildViteSourcePreviewNotice(filePath: string, workspaceRoot: string | null) {
+  const distHint = workspaceRoot && (filePath === `${workspaceRoot}/index.html` || filePath === `${workspaceRoot}\\index.html`)
+    ? 'Try previewing dist/index.html after running the project build, or open the app through the Vite dev server.'
+    : 'This file looks like a Vite source entry page. Preview the built output or run the Vite dev server instead.';
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>HTML Preview Unavailable</title>
+    <style>
+      body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f7; color: #1f2328; }
+      .previewNotice { max-width: 720px; margin: 48px auto; padding: 24px 28px; border-radius: 18px; background: #fff; box-shadow: 0 18px 44px rgba(15, 23, 42, 0.12); }
+      h1 { margin: 0 0 12px; font-size: 22px; }
+      p { margin: 0 0 10px; line-height: 1.6; }
+      code { padding: 2px 6px; border-radius: 6px; background: #f1f3f5; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    </style>
+  </head>
+  <body>
+    <div class="previewNotice">
+      <h1>Static preview is not available for this HTML entry</h1>
+      <p><code>${escapeHtml(filePath)}</code> references source modules that require the Vite toolchain at runtime.</p>
+      <p>${escapeHtml(distHint)}</p>
+    </div>
+  </body>
+</html>`;
+}
+
+function buildHtmlPreviewDocument(html: string, workspaceRoot: string, filePath: string) {
+  if (isLikelyViteSourceHtml(html)) {
+    return buildViteSourcePreviewNotice(filePath, workspaceRoot);
+  }
+
+  const rewrittenHtml = rewriteRootRelativeHtmlUrls(html, workspaceRoot);
+  return injectBaseHrefIntoHtml(rewrittenHtml, buildWorkspacePreviewBaseUrl(workspaceRoot, filePath));
 }
 
 function slugifyHeading(value: string) {
@@ -507,6 +650,8 @@ export type WorkspacePanelHandle = {
   requestAgentPatch: (task?: string) => Promise<boolean>;
   applyAgentPatches: () => Promise<boolean>;
   syncExternalWrite: (filePath: string, contents: string) => Promise<void>;
+  openWorkspaceFile: (filePath: string, options?: { reveal?: boolean }) => Promise<boolean>;
+  revealWorkspaceFile: (filePath: string) => Promise<boolean>;
 };
 
 export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
@@ -522,6 +667,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   onRunCommandInTerminal?: (command: string, timeoutMs?: number) => Promise<unknown>;
 }>(function WorkspacePanel(props, ref) {
   const { settings } = props;
+  const panelRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const editorOverlayRef = useRef<HTMLPreElement | null>(null);
   const previewBodyRef = useRef<HTMLDivElement | null>(null);
@@ -568,6 +714,9 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   });
   const [isExplorerCollapsed, setIsExplorerCollapsed] = useState(() => localStorage.getItem('workspaceExplorerCollapsed') === '1');
   const [activePdfUrl, setActivePdfUrl] = useState<string | null>(null);
+  const [flashFilePath, setFlashFilePath] = useState<string | null>(null);
+  const flashTimerRef = useRef<number | null>(null);
+  const isMacLike = useMemo(() => /Mac|iPhone|iPad|iPod/i.test(navigator.platform), []);
 
   const rootEntries = useMemo(() => (workspaceRoot ? rootEntriesByRoot[workspaceRoot] ?? [] : []), [rootEntriesByRoot, workspaceRoot]);
   const activeDoc = useMemo(() => openDocs.find((doc) => doc.path === activePath) ?? null, [activePath, openDocs]);
@@ -656,6 +805,10 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
 
   useEffect(() => {
     return () => {
+      if (flashTimerRef.current !== null) {
+        window.clearTimeout(flashTimerRef.current);
+        flashTimerRef.current = null;
+      }
       inlineStreamRef.current?.close();
       agentStreamRef.current?.close();
       inlineStreamRef.current = null;
@@ -726,6 +879,19 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     return !!workspaceRoot && !!activeDoc && activeDoc.dirty && activeDoc.fileState.kind === 'text' && !activeDoc.fileState.readOnly;
   }, [activeDoc, workspaceRoot]);
   const dirtyDocCount = useMemo(() => openDocs.filter((doc) => doc.dirty && doc.fileState.kind === 'text' && !doc.fileState.readOnly).length, [openDocs]);
+  const canTogglePreview = useMemo(() => {
+    return !!activeDoc && activeDoc.fileState.kind === 'text' && (isMarkdownFile(activeDoc.path) || isHtmlFile(activeDoc.path));
+  }, [activeDoc]);
+  const welcomeQuickOpenEntries = useMemo(() => {
+    return rootEntries
+      .filter((entry) => entry.kind === 'file')
+      .sort((left, right) => {
+        const scoreDiff = getWelcomeFilePriority(right) - getWelcomeFilePriority(left);
+        if (scoreDiff !== 0) return scoreDiff;
+        return left.name.localeCompare(right.name);
+      })
+      .slice(0, 5);
+  }, [rootEntries]);
 
   const activeFileType = useMemo(() => getFileTypeLabel(activePath), [activePath]);
   const activeWorkspaceRootName = useMemo(() => (workspaceRoot ? getWorkspaceRootName(workspaceRoot) : null), [workspaceRoot]);
@@ -735,6 +901,19 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     }
     return { headings: extractMarkdownHeadings(activeDoc.text) };
   }, [activeDoc]);
+  const activeHtmlPreview = useMemo(() => {
+    if (!activeDoc || !isHtmlFile(activeDoc.path) || activeDoc.fileState.kind !== 'text') {
+      return { srcDoc: null as string | null };
+    }
+
+    const containingRoot = workspaceRoots.find((root) => activeDoc.path === root || activeDoc.path.startsWith(`${root}/`) || activeDoc.path.startsWith(`${root}\\`))
+      ?? workspaceRoot;
+    if (!containingRoot) {
+      return { srcDoc: null };
+    }
+
+    return { srcDoc: buildHtmlPreviewDocument(activeDoc.text, containingRoot, activeDoc.path) };
+  }, [activeDoc, workspaceRoot, workspaceRoots]);
 
   const findWorkspaceRootForPath = useCallback((filePath: string | null) => {
     if (!filePath) return null;
@@ -833,9 +1012,20 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     }
   }, [findWorkspaceRootForPath, sortEntries]);
 
-  const revealCurrentFile = useCallback(async () => {
-    if (!activePath) return;
-    const root = findWorkspaceRootForPath(activePath);
+  const flashExplorerFile = useCallback((filePath: string) => {
+    setFlashFilePath(filePath);
+    if (flashTimerRef.current !== null) {
+      window.clearTimeout(flashTimerRef.current);
+    }
+    flashTimerRef.current = window.setTimeout(() => {
+      setFlashFilePath((current) => (current === filePath ? null : current));
+      flashTimerRef.current = null;
+    }, 1400);
+  }, []);
+
+  const revealFileInExplorer = useCallback(async (filePath: string | null) => {
+    if (!filePath) return false;
+    const root = findWorkspaceRootForPath(filePath);
     if (root) {
       if (root !== workspaceRoot) {
         setWorkspaceRoot(root);
@@ -843,7 +1033,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
           await fsClient.setActiveWorkspaceRoot(root);
         } catch (error) {
           setStatus(error instanceof Error ? error.message : 'Failed to activate project');
-          return;
+          return false;
         }
       }
       setCollapsedWorkspaceRoots((prev) => prev.filter((item) => item !== root));
@@ -852,13 +1042,19 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
       setIsExplorerCollapsed(false);
     }
 
-    await ensureFileVisible(activePath);
+    await ensureFileVisible(filePath);
     requestAnimationFrame(() => {
-      const selector = `[data-file-path="${CSS.escape(activePath)}"]`;
+      const selector = `[data-file-path="${CSS.escape(filePath)}"]`;
       const target = document.querySelector<HTMLElement>(selector);
       target?.scrollIntoView({ block: 'center' });
+      flashExplorerFile(filePath);
     });
-  }, [activePath, ensureFileVisible, findWorkspaceRootForPath, isExplorerCollapsed, workspaceRoot]);
+    return true;
+  }, [ensureFileVisible, findWorkspaceRootForPath, flashExplorerFile, isExplorerCollapsed, workspaceRoot]);
+
+  const revealCurrentFile = useCallback(async () => {
+    await revealFileInExplorer(activePath);
+  }, [activePath, revealFileInExplorer]);
 
   const refreshOpenDocsFromDisk = useCallback(async () => {
     const docs = openDocsRef.current;
@@ -1046,40 +1242,86 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     }
   }
 
-  async function onOpenEntry(entry: DirEntry) {
-    if (entry.kind !== 'file') return;
-    const root = findWorkspaceRootForPath(entry.path);
+  const openWorkspaceFile = useCallback(async (filePath: string, options?: { reveal?: boolean }) => {
+    const root = findWorkspaceRootForPath(filePath);
+    if (!root) return false;
+
     if (root && root !== workspaceRoot) {
-      void activateWorkspaceRoot(root);
+      await activateWorkspaceRoot(root);
     }
-    const existing = openDocs.find((doc) => doc.path === entry.path);
+
+    const existing = openDocsRef.current.find((doc) => doc.path === filePath);
     if (existing) {
-      setActivePath(entry.path);
+      setActivePath(filePath);
       setStatus('');
-      return;
+      if (options?.reveal) {
+        if (isExplorerCollapsed) {
+          setIsExplorerCollapsed(false);
+        }
+        await ensureFileVisible(filePath);
+        requestAnimationFrame(() => {
+          const selector = `[data-file-path="${CSS.escape(filePath)}"]`;
+          const target = document.querySelector<HTMLElement>(selector);
+          target?.scrollIntoView({ block: 'center' });
+        });
+      }
+      return true;
     }
+
     try {
-      const file = await fsClient.readWorkspaceFile(entry.path);
+      const file = await fsClient.readWorkspaceFile(filePath);
       setOpenDocs((prev) => [...prev, {
-        path: entry.path,
-        name: entry.name,
+        path: filePath,
+        name: getFileName(filePath),
         text: file.kind === 'text' ? file.contents ?? '' : '',
         binaryContents: file.kind === 'binary' ? file.contents : null,
         contentsEncoding: file.contentsEncoding,
         mimeType: file.mimeType,
         fileState: { kind: file.kind, readOnly: file.readOnly, size: file.size },
         dirty: false,
-        viewMode: isMarkdownFile(entry.path) || isPdfFile(entry.path) ? 'preview' : 'edit'
+        viewMode: isMarkdownFile(filePath) || isPdfFile(filePath) || isHtmlFile(filePath) ? 'preview' : 'edit'
       }]);
-      setActivePath(entry.path);
+      setActivePath(filePath);
       setStatus('');
       setSuggestionText('');
       setSuggestionError('');
       setAgentPatches([]);
       setAgentStatus('');
+      if (options?.reveal) {
+        if (isExplorerCollapsed) {
+          setIsExplorerCollapsed(false);
+        }
+        await ensureFileVisible(filePath);
+      }
+      return true;
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Failed to open file');
+      return false;
     }
+  }, [activateWorkspaceRoot, ensureFileVisible, findWorkspaceRootForPath, isExplorerCollapsed, workspaceRoot]);
+
+  const revealWorkspaceFile = useCallback(async (filePath: string) => {
+    const root = findWorkspaceRootForPath(filePath);
+    if (!root) return false;
+    if (root !== workspaceRoot) {
+      await activateWorkspaceRoot(root);
+    }
+    setCollapsedWorkspaceRoots((prev) => prev.filter((item) => item !== root));
+    if (isExplorerCollapsed) {
+      setIsExplorerCollapsed(false);
+    }
+    await ensureFileVisible(filePath);
+    requestAnimationFrame(() => {
+      const selector = `[data-file-path="${CSS.escape(filePath)}"]`;
+      const target = document.querySelector<HTMLElement>(selector);
+      target?.scrollIntoView({ block: 'center' });
+    });
+    return true;
+  }, [activateWorkspaceRoot, ensureFileVisible, findWorkspaceRootForPath, isExplorerCollapsed, workspaceRoot]);
+
+  async function onOpenEntry(entry: DirEntry) {
+    if (entry.kind !== 'file') return;
+    await openWorkspaceFile(entry.path);
   }
 
   async function onSave() {
@@ -1115,6 +1357,101 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
       setStatus(error instanceof Error ? error.message : 'Failed to save all files');
     }
   }
+
+  const togglePreviewMode = useCallback(() => {
+    if (!canTogglePreview) return;
+    updateActiveDoc((doc) => ({ ...doc, viewMode: doc.viewMode === 'preview' ? 'edit' : 'preview' }));
+  }, [canTogglePreview]);
+
+  const welcomeShortcutItems = useMemo<WelcomeShortcutItem[]>(() => {
+    return [
+      {
+        id: 'open-project',
+        title: 'Open Project',
+        description: 'Add or switch a workspace folder in the Explorer.',
+        keys: ['Mod', 'O'],
+        run: () => void onPickWorkspace()
+      },
+      {
+        id: 'toggle-explorer',
+        title: isExplorerCollapsed ? 'Show Explorer' : 'Hide Explorer',
+        description: 'Toggle the left file tree without leaving the editor area.',
+        keys: ['Mod', 'B'],
+        run: () => toggleExplorerPane()
+      },
+      {
+        id: 'save-file',
+        title: 'Save File',
+        description: canSave ? 'Write the current editor changes to disk.' : 'Available when the active text file has unsaved changes.',
+        keys: ['Mod', 'S'],
+        disabled: !canSave,
+        run: () => void onSave()
+      },
+      {
+        id: 'save-all',
+        title: 'Save All',
+        description: dirtyDocCount ? `Write all ${dirtyDocCount} dirty file${dirtyDocCount > 1 ? 's' : ''} to disk.` : 'Available when more than one file has unsaved changes.',
+        keys: ['Mod', 'Shift', 'S'],
+        disabled: dirtyDocCount === 0,
+        run: () => void onSaveAll()
+      },
+      {
+        id: 'toggle-preview',
+        title: 'Toggle Preview',
+        description: canTogglePreview ? 'Switch between source and preview for Markdown or HTML.' : 'Available when a Markdown or HTML file is active.',
+        keys: ['Mod', 'Shift', 'V'],
+        disabled: !canTogglePreview,
+        run: () => togglePreviewMode()
+      }
+    ];
+  }, [canSave, canTogglePreview, dirtyDocCount, isExplorerCollapsed, togglePreviewMode]);
+
+  useEffect(() => {
+    function handleWorkspaceShortcut(event: KeyboardEvent) {
+      if (event.defaultPrevented) return;
+      if (!event.metaKey && !event.ctrlKey) return;
+
+      const panel = panelRef.current;
+      const activeElement = document.activeElement;
+      if (!panel || !(activeElement instanceof HTMLElement) || !panel.contains(activeElement)) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+
+      if (!event.shiftKey && !event.altKey && key === 'o') {
+        event.preventDefault();
+        void onPickWorkspace();
+        return;
+      }
+
+      if (!event.shiftKey && !event.altKey && key === 'b') {
+        event.preventDefault();
+        toggleExplorerPane();
+        return;
+      }
+
+      if (!event.altKey && key === 's') {
+        event.preventDefault();
+        if (event.shiftKey) {
+          void onSaveAll();
+        } else {
+          void onSave();
+        }
+        return;
+      }
+
+      if (!event.altKey && event.shiftKey && key === 'v') {
+        event.preventDefault();
+        togglePreviewMode();
+      }
+    }
+
+    window.addEventListener('keydown', handleWorkspaceShortcut);
+    return () => {
+      window.removeEventListener('keydown', handleWorkspaceShortcut);
+    };
+  }, [togglePreviewMode, canSave, dirtyDocCount, isExplorerCollapsed]);
 
   useEffect(() => {
     const off = fsClient.onWorkspaceEvent((event) => {
@@ -1278,6 +1615,8 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   useImperativeHandle(ref, () => ({
     requestAgentPatch,
     applyAgentPatches,
+    openWorkspaceFile,
+    revealWorkspaceFile,
     async syncExternalWrite(filePath: string, contents: string) {
       setOpenDocs((prev) => prev.map((doc) => (
         doc.path === filePath
@@ -1297,7 +1636,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
         await refreshList(root);
       }
     }
-  }), [applyAgentPatches, findWorkspaceRootForPath, refreshList, requestAgentPatch]);
+  }), [applyAgentPatches, findWorkspaceRootForPath, openWorkspaceFile, refreshList, requestAgentPatch, revealWorkspaceFile]);
 
   async function toggleDir(entry: DirEntry) {
     if (entry.kind !== 'dir') return;
@@ -1349,6 +1688,21 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     overlay.scrollLeft = target.scrollLeft;
   }
 
+  function getTreeItemPadding(depth: number) {
+    if (depth <= 0) return 6;
+    return 6 + 10 + ((depth - 1) * 16);
+  }
+
+  function getTreeChildrenStyle(depth: number) {
+    if (depth <= 0) {
+      return { marginLeft: '10px', paddingLeft: '6px' };
+    }
+    return {
+      marginLeft: `${10 + depth * 4}px`,
+      paddingLeft: `${6 + depth * 2}px`
+    };
+  }
+
   function renderEntry(entry: DirEntry, depth = 0) {
     const isExpanded = expandedDirs.includes(entry.path);
     const children = treeEntries[entry.path] ?? [];
@@ -1357,9 +1711,12 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     const icon = entry.kind === 'file' ? getExplorerFileIcon(entry.path) : null;
 
     return (
-      <div key={entry.path}>
+      <div key={entry.path} className="treeNode">
         <button
-          className={entry.path === activePath ? 'fileItem active' : isOpen ? 'fileItem open' : 'fileItem'}
+          className={[
+            entry.path === activePath ? 'fileItem active' : isOpen ? 'fileItem open' : 'fileItem',
+            flashFilePath === entry.path ? 'flash' : ''
+          ].filter(Boolean).join(' ')}
           data-file-path={entry.path}
           onClick={() => {
             if (entry.kind === 'dir') {
@@ -1369,7 +1726,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
             }
           }}
           title={entry.path}
-          style={{ paddingLeft: `${8 + depth * 14}px` }}
+          style={{ paddingLeft: `${getTreeItemPadding(depth)}px` }}
         >
           <span className="treeToggle">{entry.kind === 'dir' ? (isExpanded ? '⌄' : '›') : ''}</span>
           <span className={entry.kind === 'dir' ? 'explorerIcon folder' : `explorerIcon file tone-${icon?.tone ?? 'slate'}`} aria-hidden="true">
@@ -1378,8 +1735,8 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
           <span className="fileName">{entry.name}</span>
         </button>
         {entry.kind === 'dir' && isExpanded ? (
-          <div>
-            {isLoading ? <div className="treeLoading" style={{ paddingLeft: `${24 + depth * 14}px` }}>Loading…</div> : null}
+          <div className="treeNodeChildren" style={getTreeChildrenStyle(depth)}>
+            {isLoading ? <div className="treeLoading" style={{ paddingLeft: `${getTreeItemPadding(depth + 1) + 18}px` }}>Loading…</div> : null}
             {children.map((child) => renderEntry(child, depth + 1))}
           </div>
         ) : null}
@@ -1471,14 +1828,17 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   }
 
   return (
-    <div className="workspaceCard">
+    <div className="workspaceCard" ref={panelRef}>
       <div className="workspaceHeader">
         <div className="workspaceHeaderPrimary">
           <button onClick={onPickWorkspace}>Open Project…</button>
           <div className="workspaceHeaderMeta">
             <div className="cardTitle">Project</div>
-            <div className="workspacePath">{workspaceRoot ? `${activeWorkspaceRootName} · ${workspaceRoots.length} project${workspaceRoots.length > 1 ? 's' : ''} open` : 'No project selected'}</div>
-            {workspaceRoot ? <div className="workspaceActiveRootPath" title={workspaceRoot}>{workspaceRoot}</div> : null}
+            <div className="workspacePath" title={workspaceRoot ?? 'No project selected'}>
+              {workspaceRoot
+                ? `${activeWorkspaceRootName} · ${workspaceRoots.length} project${workspaceRoots.length > 1 ? 's' : ''} open · ${workspaceRoot}`
+                : 'No project selected'}
+            </div>
           </div>
         </div>
       </div>
@@ -1488,14 +1848,30 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
         <div className="fileList">
           <div className="explorerHeader">
             <span>Explorer</span>
-            <button
-              type="button"
-              className="explorerHeaderToggle"
-              onClick={toggleExplorerPane}
-              aria-label="Hide Explorer"
-            >
-              ‹
-            </button>
+            <div className="explorerHeaderActions">
+              <button
+                type="button"
+                className="explorerHeaderLocate"
+                onClick={() => void revealCurrentFile()}
+                aria-label="Locate current file in Explorer"
+                title={activePath ? 'Select Opened File in Explorer' : 'Open a file to select it in Explorer'}
+                disabled={!activePath}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="12" cy="12" r="7.25" fill="none" stroke="currentColor" strokeWidth="1.7" />
+                  <circle cx="12" cy="12" r="2.25" fill="currentColor" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="explorerHeaderToggle"
+                onClick={toggleExplorerPane}
+                title="Hide Explorer"
+                aria-label="Hide Explorer"
+              >
+                ‹
+              </button>
+            </div>
           </div>
           <div className="explorerTree">
           {workspaceRoots.length ? (
@@ -1553,17 +1929,24 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
                       <div className="fileBadge strong">{activeFileType}</div>
                       {activeDoc.fileState.kind === 'binary' ? <div className="fileBadge strong">BIN</div> : null}
                       {activeDoc.fileState.readOnly ? <div className="fileBadge strong">RO</div> : null}
-                      {dirtyDocCount > 1 ? (
-                        <button type="button" onClick={() => void onSaveAll()}>
-                          Save All ({dirtyDocCount})
-                        </button>
-                      ) : null}
-                      {isMarkdownFile(activeDoc.path) ? (
-                        <button type="button" onClick={() => updateActiveDoc((doc) => ({ ...doc, viewMode: doc.viewMode === 'preview' ? 'edit' : 'preview' }))}>
-                          {activeDoc.viewMode === 'preview' ? 'Edit' : 'Preview'}
-                        </button>
-                      ) : null}
-                      <div className="statusText">{status}</div>
+                      <button
+                        type="button"
+                        className={dirtyDocCount ? 'editorActionButton' : 'editorActionButton hidden'}
+                        onClick={() => void onSaveAll()}
+                        disabled={!dirtyDocCount}
+                        title={dirtyDocCount ? `Save all dirty files (${dirtyDocCount})` : 'No dirty files to save'}
+                      >
+                        Save All
+                      </button>
+                      <button
+                        type="button"
+                        className={canTogglePreview ? 'editorActionButton' : 'editorActionButton hidden'}
+                        onClick={togglePreviewMode}
+                        disabled={!canTogglePreview}
+                      >
+                        {activeDoc.viewMode === 'preview' ? 'Edit' : 'Preview'}
+                      </button>
+                      <div className="statusText">{status || '\u00A0'}</div>
                       <button onClick={onSave} disabled={!canSave}>
                         Save
                       </button>
@@ -1577,6 +1960,19 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
                       </div>
                     ) : (
                       <div className="footerHint">Binary file detected. Preview/edit is disabled in this panel.</div>
+                    )
+                  ) : activeDoc.viewMode === 'preview' && isHtmlFile(activeDoc.path) ? (
+                    activeHtmlPreview.srcDoc ? (
+                      <div className="editorPreview htmlPreviewShell">
+                        <iframe
+                          className="htmlPreviewFrame"
+                          srcDoc={activeHtmlPreview.srcDoc ?? undefined}
+                          title={activeDoc.name}
+                          sandbox="allow-same-origin allow-scripts allow-forms allow-modals"
+                        />
+                      </div>
+                    ) : (
+                      <div className="footerHint">HTML preview is unavailable until a workspace root is selected.</div>
                     )
                   ) : activeDoc.viewMode === 'preview' && isMarkdownFile(activeDoc.path) ? (
                     <div className="editorPreview editorPreviewLayout">
@@ -1720,7 +2116,77 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
               ) : null}
             </>
           ) : (
-            <div className="empty">Open files from the project tree to start a multi-file editing session.</div>
+            <div className="workspaceWelcome">
+              <div className="workspaceWelcomeContent">
+                <div className="workspaceWelcomeHero">
+                  <div className="workspaceWelcomeEyebrow">Workspace</div>
+                  <h2 className="workspaceWelcomeTitle">{workspaceRoot ? 'Open a file to start editing' : 'Open a project to get started'}</h2>
+                  <p className="workspaceWelcomeLead">
+                    {workspaceRoot
+                      ? 'Use the Explorer on the left, or jump into a common project file from the shortcuts below.'
+                      : 'Pick a folder to load the Explorer, preview HTML and Markdown files, and edit multiple files side by side.'}
+                  </p>
+                </div>
+
+                <div className="workspaceWelcomeActions">
+                  <button type="button" className="workspaceWelcomeAction primary" onClick={() => void onPickWorkspace()}>
+                    Open Project…
+                  </button>
+                  <button type="button" className="workspaceWelcomeAction" onClick={toggleExplorerPane}>
+                    {isExplorerCollapsed ? 'Show Explorer' : 'Hide Explorer'}
+                  </button>
+                </div>
+
+                {welcomeQuickOpenEntries.length ? (
+                  <div className="workspaceWelcomeSection">
+                    <div className="workspaceWelcomeSectionTitle">Quick Open</div>
+                    <div className="workspaceWelcomeFileList">
+                      {welcomeQuickOpenEntries.map((entry) => (
+                        <button
+                          key={entry.path}
+                          type="button"
+                          className="workspaceWelcomeFile"
+                          onClick={() => void openWorkspaceFile(entry.path)}
+                          title={entry.path}
+                        >
+                          <span className={`explorerIcon file tone-${getExplorerFileIcon(entry.path).tone}`} aria-hidden="true">
+                            {getExplorerFileIcon(entry.path).label}
+                          </span>
+                          <span className="workspaceWelcomeFileText">
+                            <span className="workspaceWelcomeFileName">{entry.name}</span>
+                            <span className="workspaceWelcomeFilePath">{toWorkspaceRelativePath(workspaceRoot ?? '', entry.path)}</span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="workspaceWelcomeSection">
+                  <div className="workspaceWelcomeSectionTitle">Common Shortcuts</div>
+                  <div className="workspaceShortcutList">
+                    {welcomeShortcutItems.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className={item.disabled ? 'workspaceShortcutCard disabled' : 'workspaceShortcutCard'}
+                        onClick={() => {
+                          if (item.disabled) return;
+                          void item.run();
+                        }}
+                        disabled={item.disabled}
+                      >
+                        <span className="workspaceShortcutMeta">
+                          <span className="workspaceShortcutTitle">{item.title}</span>
+                          <span className="workspaceShortcutDescription">{item.description}</span>
+                        </span>
+                        <span className="workspaceShortcutKey">{formatShortcutLabel(item.keys, isMacLike)}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
           )}
         </div>
       </div>
