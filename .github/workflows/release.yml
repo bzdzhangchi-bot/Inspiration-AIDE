@@ -28,7 +28,7 @@ jobs:
             arch: arm64
             script: dist:mac:arm64
             artifact_name: assistant-desk-mac-arm64
-          - runner: macos-13
+          - runner: macos-14
             arch: x64
             script: dist:mac:x64
             artifact_name: assistant-desk-mac-x64
