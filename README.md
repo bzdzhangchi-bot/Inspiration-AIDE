@@ -14,6 +14,8 @@ Assistant Desk is a macOS desktop AI coding workspace that brings together:
 
 Built with **Electron + Vite + React + TypeScript**.
 
+![Assistant Desk homepage](docs/images/homepage.png)
+
 ## Who is this for?
 
 - **End users**: download the packaged app and use it as your local coding desk.

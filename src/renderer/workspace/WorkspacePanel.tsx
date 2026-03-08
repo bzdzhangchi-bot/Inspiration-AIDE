@@ -1,3 +1,4 @@
+import GithubSlugger from 'github-slugger';
 import { Suspense, lazy, type DragEvent as ReactDragEvent, forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { fsClient } from '../fsClient';
 import { CORE_SERVER_URL, openAgentPatchStream, openInlineCompletionStream } from '../wsClient';
@@ -355,15 +356,6 @@ function buildHtmlPreviewDocument(html: string, workspaceRoot: string, filePath:
   return injectBaseHrefIntoHtml(rewrittenHtml, buildWorkspacePreviewBaseUrl(workspaceRoot, filePath));
 }
 
-function slugifyHeading(value: string) {
-  return value
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9\u4e00-\u9fa5\s-]/g, '')
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-') || 'section';
-}
-
 function escapeHtml(value: string) {
   return value
     .replace(/&/g, '&amp;')
@@ -382,24 +374,44 @@ function decodeBase64ToBytes(value: string) {
 
 function extractMarkdownHeadings(markdown: string) {
   const headings: MarkdownHeading[] = [];
-  const slugCounts = new Map<string, number>();
-  const headingPattern = /^(#{1,6})\s+(.*)$/gm;
+  const slugger = new GithubSlugger();
+  const lines = markdown.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  let inFence = false;
 
-  for (const match of markdown.matchAll(headingPattern)) {
-    const level = match[1]?.length ?? 1;
-    const text = match[2]?.trim().replace(/\s+#*$/, '') ?? '';
-    if (!text) continue;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? '';
+    const trimmed = line.trim();
 
-    const baseId = slugifyHeading(text);
-    const repeatCount = slugCounts.get(baseId) ?? 0;
-    slugCounts.set(baseId, repeatCount + 1);
-    const id = repeatCount === 0 ? baseId : `${baseId}-${repeatCount}`;
+    if (/^(```|~~~)/.test(trimmed)) {
+      inFence = !inFence;
+      continue;
+    }
 
-    headings.push({
-      id,
-      text,
-      level
-    });
+    if (inFence) continue;
+
+    const atxMatch = /^(#{1,6})\s+(.*?)\s*#*\s*$/.exec(trimmed);
+    if (atxMatch) {
+      const text = atxMatch[2]?.trim() ?? '';
+      if (!text) continue;
+      headings.push({
+        id: slugger.slug(text),
+        text,
+        level: atxMatch[1].length
+      });
+      continue;
+    }
+
+    const nextLine = lines[index + 1]?.trim() ?? '';
+    if (!trimmed || !nextLine) continue;
+
+    if (/^==+$/.test(nextLine) || /^--+$/.test(nextLine)) {
+      headings.push({
+        id: slugger.slug(trimmed),
+        text: trimmed,
+        level: /^==+$/.test(nextLine) ? 1 : 2
+      });
+      index += 1;
+    }
   }
 
   return headings;
@@ -519,6 +531,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   const agentStreamRef = useRef<{ close: () => void } | null>(null);
   const splitDragRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const workspaceRootRef = useRef<string | null>(null);
+  const activePathRef = useRef<string | null>(null);
   const expandedDirsRef = useRef<string[]>([]);
   const openDocsRef = useRef<OpenDoc[]>([]);
   const refreshTimerRef = useRef<number | null>(null);
@@ -642,6 +655,10 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   useEffect(() => {
     openDocsRef.current = openDocs;
   }, [openDocs]);
+
+  useEffect(() => {
+    activePathRef.current = activePath;
+  }, [activePath]);
 
   useEffect(() => {
     props.onContextChange?.({
@@ -1228,10 +1245,16 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     }
   }
 
+  const updateActiveDoc = useCallback((updater: (doc: OpenDoc) => OpenDoc) => {
+    const currentActivePath = activePathRef.current;
+    if (!currentActivePath) return;
+    setOpenDocs((prev) => prev.map((doc) => (doc.path === currentActivePath ? updater(doc) : doc)));
+  }, []);
+
   const togglePreviewMode = useCallback(() => {
     if (!canTogglePreview) return;
     updateActiveDoc((doc) => ({ ...doc, viewMode: doc.viewMode === 'preview' ? 'edit' : 'preview' }));
-  }, [canTogglePreview]);
+  }, [canTogglePreview, updateActiveDoc]);
 
   const welcomeShortcutItems = useMemo<WelcomeShortcutItem[]>(() => {
     return [
@@ -1525,11 +1548,6 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     setIsExplorerCollapsed((prev) => !prev);
     setStatus(isExplorerCollapsed ? 'Explorer shown' : 'Explorer hidden');
     setTimeout(() => setStatus(''), 1000);
-  }
-
-  function updateActiveDoc(updater: (doc: OpenDoc) => OpenDoc) {
-    if (!activePath) return;
-    setOpenDocs((prev) => prev.map((doc) => (doc.path === activePath ? updater(doc) : doc)));
   }
 
   function closeDoc(path: string) {

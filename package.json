@@ -1,7 +1,7 @@
 {
   "name": "assistant-desk",
   "private": true,
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Desktop AI coding workspace with assistant chat, terminal, and multi-project explorer.",
   "author": "Zhang Chi",
   "main": "electron/main.cjs",
