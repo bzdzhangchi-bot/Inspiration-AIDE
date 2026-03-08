@@ -21,12 +21,12 @@
     "core:dev": "NODE_EXTRA_CA_CERTS=/tmp/system-root-cas.pem node --import tsx ./src/main/core-server.ts",
     "mvp:dev": "npm run electron:dev",
     "release:prepare": "npm run icon:build && npm run build && npm run electron:build && npm run dist:dir",
-    "dist": "if [ -f /tmp/system-root-cas.pem ]; then export NODE_EXTRA_CA_CERTS=/tmp/system-root-cas.pem; fi; npm run icon:build && npm run build && npm run electron:build && npm run electron:install-app-deps && electron-builder",
+    "dist": "if [ -f /tmp/system-root-cas.pem ]; then export NODE_EXTRA_CA_CERTS=/tmp/system-root-cas.pem; fi; npm run icon:build && npm run build && npm run electron:build && npm run electron:install-app-deps && electron-builder --publish never",
     "dist:mac": "npm run dist:mac:arm64",
-    "dist:mac:arm64": "if [ -f /tmp/system-root-cas.pem ]; then export NODE_EXTRA_CA_CERTS=/tmp/system-root-cas.pem; fi; npm run icon:build && npm run build && npm run electron:build && npm run electron:install-app-deps && electron-builder --mac dmg zip --arm64",
-    "dist:mac:x64": "if [ -f /tmp/system-root-cas.pem ]; then export NODE_EXTRA_CA_CERTS=/tmp/system-root-cas.pem; fi; npm run icon:build && npm run build && npm run electron:build && npm run electron:install-app-deps && electron-builder --mac dmg zip --x64",
-    "dist:mac:universal": "if [ -f /tmp/system-root-cas.pem ]; then export NODE_EXTRA_CA_CERTS=/tmp/system-root-cas.pem; fi; npm run icon:build && npm run build && npm run electron:build && npm run electron:install-app-deps && electron-builder --mac dmg zip --universal",
-    "dist:dir": "if [ -f /tmp/system-root-cas.pem ]; then export NODE_EXTRA_CA_CERTS=/tmp/system-root-cas.pem; fi; npm run icon:build && npm run build && npm run electron:build && npm run electron:install-app-deps && electron-builder --dir"
+    "dist:mac:arm64": "if [ -f /tmp/system-root-cas.pem ]; then export NODE_EXTRA_CA_CERTS=/tmp/system-root-cas.pem; fi; npm run icon:build && npm run build && npm run electron:build && npm run electron:install-app-deps && electron-builder --publish never --mac dmg zip --arm64",
+    "dist:mac:x64": "if [ -f /tmp/system-root-cas.pem ]; then export NODE_EXTRA_CA_CERTS=/tmp/system-root-cas.pem; fi; npm run icon:build && npm run build && npm run electron:build && npm run electron:install-app-deps && electron-builder --publish never --mac dmg zip --x64",
+    "dist:mac:universal": "if [ -f /tmp/system-root-cas.pem ]; then export NODE_EXTRA_CA_CERTS=/tmp/system-root-cas.pem; fi; npm run icon:build && npm run build && npm run electron:build && npm run electron:install-app-deps && electron-builder --publish never --mac dmg zip --universal",
+    "dist:dir": "if [ -f /tmp/system-root-cas.pem ]; then export NODE_EXTRA_CA_CERTS=/tmp/system-root-cas.pem; fi; npm run icon:build && npm run build && npm run electron:build && npm run electron:install-app-deps && electron-builder --publish never --dir"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
