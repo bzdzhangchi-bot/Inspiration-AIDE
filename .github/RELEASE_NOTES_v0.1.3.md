@@ -6,12 +6,15 @@ Assistant Desk 0.1.3 is a focused stability release for Markdown editing and pre
 
 - Fixed an intermittent issue where the Markdown `Edit` and `Preview` buttons could stop responding after switching between previewable files.
 - Aligned Markdown TOC heading ids with rendered preview anchor ids so in-document navigation stays consistent.
-- Updated the README with a homepage screenshot for clearer project presentation.
+- Updated the README with a homepage screenshot and clearer release copy.
+- Carries forward the packaged-app responsiveness improvements introduced in 0.1.2.
 
 ## Included artifacts
 
-- macOS arm64 DMG: `Assistant Desk-0.1.3-arm64.dmg`
-- macOS arm64 ZIP: `Assistant Desk-0.1.3-arm64.zip`
+- macOS arm64 DMG: `Assistant.Desk-0.1.3-arm64.dmg`
+- macOS arm64 ZIP: `Assistant.Desk-0.1.3-arm64.zip`
+- macOS x64 DMG: `Assistant.Desk-0.1.3-x64.dmg`
+- macOS x64 ZIP: `Assistant.Desk-0.1.3-x64.zip`
 
 ## Notes
 
@@ -29,3 +32,4 @@ Assistant Desk 0.1.3 is a focused stability release for Markdown editing and pre
 ## Known limitations
 
 - Apple notarization is not enabled for this release.
+- Release assets are currently provided as separate arm64 and x64 macOS builds.
