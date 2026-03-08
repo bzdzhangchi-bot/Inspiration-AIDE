@@ -64,8 +64,12 @@ app.get(/^\/workspace-preview\/([^/]+)\/(.+)$/, async (req, res) => {
   }
 });
 
-const db = openDb();
-void db; // db is initialized for MVP; persistence wiring comes next
+try {
+  const db = openDb();
+  void db; // db is initialized for MVP; persistence wiring comes next
+} catch (error) {
+  console.warn('[core] database disabled:', error instanceof Error ? error.message : 'unknown error');
+}
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true, port: PORT });

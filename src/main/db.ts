@@ -1,9 +1,15 @@
-import Database from 'better-sqlite3';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 
-export type Db = ReturnType<typeof openDb>;
+const require = createRequire(import.meta.url);
+
+export type Db = {
+  pragma(sql: string): unknown;
+  exec(sql: string): unknown;
+  close(): void;
+};
 
 function appDataDir() {
   const dir = path.join(os.homedir(), 'Library', 'Application Support', 'assistant-desk');
@@ -13,6 +19,7 @@ function appDataDir() {
 
 export function openDb() {
   const dbPath = path.join(appDataDir(), 'assistant-desk.sqlite3');
+  const Database = require('better-sqlite3') as new (filename: string) => Db;
   const db = new Database(dbPath);
 
   db.pragma('journal_mode = WAL');

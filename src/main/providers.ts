@@ -71,7 +71,8 @@ register({
     const resp = await fetch(url.toString(), {
       method: 'POST',
       headers: {
-        'content-type': 'application/json'
+        'content-type': 'application/json',
+        ...(req.apiKey?.trim() ? { authorization: `Bearer ${req.apiKey}` } : {})
       },
       body: JSON.stringify({
         model: req.model,
@@ -816,6 +817,7 @@ async function* streamGitHubCopilotAgentSession(req: AgentSessionRequest): Async
   try {
     const response = await requestAnthropicCompatibleAgentMessage(req, {
       baseUrl: req.baseUrl || 'http://127.0.0.1:4141',
+      headers: req.apiKey?.trim() ? { authorization: `Bearer ${req.apiKey}` } : undefined,
       beta: true,
       targetLabel: 'Copilot gateway'
     });

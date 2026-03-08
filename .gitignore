@@ -7,3 +7,4 @@ electron-dev.log
 *.log
 *.local
 CLAUDE.md
+/.claude/latest

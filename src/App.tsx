@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type MutableRefObject } from 'react';
 import './App.css';
 import { Sidebar, type PageId } from './renderer/components/Sidebar';
 import { TerminalPanel, type TerminalPanelHandle } from './renderer/components/TerminalPanel';
@@ -35,6 +35,8 @@ const DEFAULT_SETTINGS: SettingsState = {
 
 const MIN_ASSISTANT_VISIBLE_HEIGHT = 420;
 const MIN_ASSISTANT_VISIBLE_HEIGHT_CLAUDE_CLI = 160;
+const SETTINGS_PERSIST_DEBOUNCE_MS = 220;
+const TERMINAL_HEIGHT_PERSIST_DEBOUNCE_MS = 120;
 
 function getTerminalMaxHeight(interactionMode?: ModelProfile['interactionMode']) {
   const minAssistantVisibleHeight = interactionMode === 'claude_cli'
@@ -135,18 +137,73 @@ function App() {
 
   const terminalPanelRef = useRef<TerminalPanelHandle | null>(null);
   const terminalResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  const settingsPersistTimerRef = useRef<number | null>(null);
+  const pendingSettingsRef = useRef<SettingsState | null>(null);
+  const terminalHeightPersistTimerRef = useRef<number | null>(null);
+  const pendingTerminalHeightRef = useRef<number | null>(null);
+
+  const clearPersistTimer = useCallback((timerRef: MutableRefObject<number | null>) => {
+    if (timerRef.current === null) return;
+    window.clearTimeout(timerRef.current);
+    timerRef.current = null;
+  }, []);
+
+  const flushSettingsPersist = useCallback(() => {
+    const pending = pendingSettingsRef.current;
+    if (!pending) return;
+    localStorage.setItem('settings', JSON.stringify(pending));
+    pendingSettingsRef.current = null;
+    clearPersistTimer(settingsPersistTimerRef);
+  }, [clearPersistTimer]);
+
+  const scheduleSettingsPersist = useCallback((next: SettingsState) => {
+    pendingSettingsRef.current = next;
+    clearPersistTimer(settingsPersistTimerRef);
+    settingsPersistTimerRef.current = window.setTimeout(() => {
+      flushSettingsPersist();
+    }, SETTINGS_PERSIST_DEBOUNCE_MS);
+  }, [clearPersistTimer, flushSettingsPersist]);
+
+  const flushTerminalHeightPersist = useCallback(() => {
+    const pending = pendingTerminalHeightRef.current;
+    if (pending === null) return;
+    localStorage.setItem('terminalHeight', String(pending));
+    pendingTerminalHeightRef.current = null;
+    clearPersistTimer(terminalHeightPersistTimerRef);
+  }, [clearPersistTimer]);
+
+  const scheduleTerminalHeightPersist = useCallback((next: number) => {
+    pendingTerminalHeightRef.current = next;
+    clearPersistTimer(terminalHeightPersistTimerRef);
+    terminalHeightPersistTimerRef.current = window.setTimeout(() => {
+      flushTerminalHeightPersist();
+    }, TERMINAL_HEIGHT_PERSIST_DEBOUNCE_MS);
+  }, [clearPersistTimer, flushTerminalHeightPersist]);
 
   useEffect(() => {
-    localStorage.setItem('settings', JSON.stringify(settings));
-  }, [settings]);
+    scheduleSettingsPersist(settings);
+  }, [scheduleSettingsPersist, settings]);
 
   useEffect(() => {
     localStorage.setItem('themeMode', themeMode);
   }, [themeMode]);
 
   useEffect(() => {
-    localStorage.setItem('terminalHeight', String(terminalHeight));
-  }, [terminalHeight]);
+    scheduleTerminalHeightPersist(terminalHeight);
+  }, [scheduleTerminalHeightPersist, terminalHeight]);
+
+  useEffect(() => {
+    function flushPendingStorage() {
+      flushSettingsPersist();
+      flushTerminalHeightPersist();
+    }
+
+    window.addEventListener('pagehide', flushPendingStorage);
+    return () => {
+      window.removeEventListener('pagehide', flushPendingStorage);
+      flushPendingStorage();
+    };
+  }, [flushSettingsPersist, flushTerminalHeightPersist]);
 
   useEffect(() => {
     function onPointerMove(ev: PointerEvent) {
@@ -203,6 +260,10 @@ function App() {
     terminalPanelRef.current?.focusActiveSession();
   }
 
+  function toggleChatDrawer() {
+    setIsChatDrawerOpen((value) => !value);
+  }
+
   async function sendPromptToClaudeCliFromChat(prompt: string): Promise<void> {
     await ensureTerminalOpenAndFocused();
     await claudeCodeClient.sendPrompt(prompt);
@@ -242,8 +303,9 @@ function App() {
                 profiles={settings.profiles}
                 activeProfileId={settings.activeProfileId}
                 onSelectProfile={(profileId) => setSettings((prev) => ({ ...prev, activeProfileId: profileId }))}
+                onOpenGitPage={() => setActivePage('git')}
                 isDrawerOpen={isChatDrawerOpen}
-                onToggleDrawer={() => setIsChatDrawerOpen((v) => !v)}
+                onToggleDrawer={toggleChatDrawer}
                 onRunCommandInTerminal={runTerminalCommandFromChat}
                 onInterruptAgentRun={interruptAgentRunFromChat}
                 onSendPromptToClaudeCli={sendPromptToClaudeCliFromChat}
@@ -261,7 +323,8 @@ function App() {
               <button
                 type="button"
                 className={isChatDrawerOpen ? 'appSideRailItem active' : 'appSideRailItem'}
-                onClick={() => setIsChatDrawerOpen((v) => !v)}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={toggleChatDrawer}
                 aria-pressed={isChatDrawerOpen}
                 title={isChatDrawerOpen ? 'Hide Assistant panel' : 'Show Assistant panel'}
               >

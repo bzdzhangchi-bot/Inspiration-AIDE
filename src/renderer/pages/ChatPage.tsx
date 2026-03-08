@@ -1,5 +1,8 @@
 import DOMPurify from 'dompurify';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkBreaks from 'remark-breaks';
+import remarkGfm from 'remark-gfm';
 import type { AgentSessionMessage, ChatMessage, ChatRequest } from '../../shared/types';
 import { claudeCodeClient, type ClaudeCodeRuntimeState } from '../claudeCodeClient';
 import { checkProviderConnection, openAgentSessionStream, openChatStream } from '../wsClient';
@@ -14,6 +17,18 @@ type Msg = {
 };
 
 type ThreadMap = Record<string, Msg[]>;
+type ThreadUpdatedAtMap = Record<string, number>;
+type ThreadSummary = {
+  messageCount: number;
+  lastUserText: string;
+  lastAssistantText: string;
+};
+type ThreadSummaryMap = Record<string, ThreadSummary>;
+type ThreadStore = {
+  threadsByProfile: ThreadMap;
+  threadUpdatedAtByProfile: ThreadUpdatedAtMap;
+  threadSummaryByProfile: ThreadSummaryMap;
+};
 type ConnectionState = {
   key: string;
   status: 'ok' | 'error';
@@ -66,7 +81,7 @@ type ClaudeMemoryGroup = {
   emptyText: string;
 };
 
-type ClaudeInspectorSection = 'overview' | 'memory' | 'skills';
+type InspectorSection = 'overview' | 'memory' | 'skills' | 'model-input' | 'tooling';
 type ClaudeInspectorFile = ClaudeMemorySnapshot['instructionFiles'][number];
 type ClaudeInspectorTimelineItem = {
   id: string;
@@ -74,12 +89,38 @@ type ClaudeInspectorTimelineItem = {
   meta: string;
   updatedAt: number;
 };
+type NativeAgentToolEvent = {
+  id: string;
+  tool: string;
+  phase: 'request' | 'result';
+  summary: string;
+  detail: string;
+  isError?: boolean;
+};
+type NativeAgentInspectorSnapshot = {
+  updatedAt: number;
+  requestMode: 'structured' | 'legacy';
+  outgoingText: string;
+  workspaceSummary: string;
+  memoryContext: string;
+  systemPrompt: string;
+  payload: string;
+  lastResponse: string;
+  progressLines: string[];
+  toolEvents: NativeAgentToolEvent[];
+};
+
+const EMPTY_THREAD: Msg[] = [];
+const THREAD_PERSIST_DEBOUNCE_MS = 240;
+const MAX_NATIVE_MEMORY_ITEMS = 10;
+const MAX_NATIVE_MEMORY_PREVIEW_CHARS = 420;
+const MAX_NATIVE_MEMORY_QUERY_TERMS = 18;
 
 function looksLikeHtml(value: string) {
   return /<\/?[a-z][\s\S]*>/i.test(value);
 }
 
-function ChatBubbleContent({ content }: { content: string }) {
+function ChatBubbleContent({ content, renderMarkdown = false }: { content: string; renderMarkdown?: boolean }) {
   const sanitizedHtml = useMemo(() => {
     if (!looksLikeHtml(content)) return null;
     return DOMPurify.sanitize(content, {
@@ -89,6 +130,33 @@ function ChatBubbleContent({ content }: { content: string }) {
 
   if (sanitizedHtml !== null) {
     return <div className="bubbleRichContent" dangerouslySetInnerHTML={{ __html: sanitizedHtml }} />;
+  }
+
+  if (renderMarkdown) {
+    return (
+      <div className="bubbleRichContent bubbleMarkdownContent">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm, remarkBreaks]}
+          components={{
+            a({ href, children, ...props }) {
+              const external = typeof href === 'string' && /^(https?:)?\/\//.test(href);
+              return (
+                <a
+                  href={href}
+                  target={external ? '_blank' : undefined}
+                  rel={external ? 'noreferrer noopener' : undefined}
+                  {...props}
+                >
+                  {children}
+                </a>
+              );
+            }
+          }}
+        >
+          {content}
+        </ReactMarkdown>
+      </div>
+    );
   }
 
   return <div className="bubblePlainText">{content}</div>;
@@ -187,6 +255,114 @@ function loadStoredThread(profileId: string): Msg[] {
   } catch {
     return [];
   }
+}
+
+function loadStoredThreadState(profiles: ModelProfile[]) {
+  const threadsByProfile: ThreadMap = {};
+  const threadUpdatedAtByProfile: ThreadUpdatedAtMap = {};
+  const threadSummaryByProfile: ThreadSummaryMap = {};
+
+  for (const profile of profiles) {
+    const thread = loadStoredThread(profile.id);
+    threadsByProfile[profile.id] = thread;
+    threadSummaryByProfile[profile.id] = buildThreadSummary(thread);
+    const updatedAt = loadHistoryUpdatedAt(profile.id);
+    if (updatedAt > 0) {
+      threadUpdatedAtByProfile[profile.id] = updatedAt;
+    }
+  }
+
+  return { threadsByProfile, threadUpdatedAtByProfile, threadSummaryByProfile };
+}
+
+function findLastMessageContent(thread: Msg[], role: Msg['role']) {
+  for (let index = thread.length - 1; index >= 0; index -= 1) {
+    const item = thread[index];
+    if (item.role === role) {
+      return item.content;
+    }
+  }
+  return '';
+}
+
+function buildThreadSummary(thread: Msg[]): ThreadSummary {
+  return {
+    messageCount: thread.length,
+    lastUserText: previewText(findLastMessageContent(thread, 'user'), 90),
+    lastAssistantText: previewText(findLastMessageContent(thread, 'assistant'), 120)
+  };
+}
+
+function truncateInspectorText(value: string, maxChars: number) {
+  const trimmed = value.trim();
+  if (trimmed.length <= maxChars) return trimmed;
+  return `${trimmed.slice(0, maxChars)}\n...[truncated]`;
+}
+
+function extractSearchTerms(value: string) {
+  const matches = value.toLowerCase().match(/[a-z0-9_./-]{3,}/g) ?? [];
+  const unique = new Set<string>();
+  for (const item of matches) {
+    unique.add(item);
+    if (unique.size >= MAX_NATIVE_MEMORY_QUERY_TERMS) break;
+  }
+  return [...unique];
+}
+
+function scoreNativeMemoryItem(item: ClaudeMemorySnapshot['instructionFiles'][number], searchTerms: string[]) {
+  const haystack = `${item.relativePath}\n${item.displayPath}\n${item.preview}`.toLowerCase();
+  let score = item.updatedAt / 1e12;
+
+  for (const term of searchTerms) {
+    if (haystack.includes(term)) {
+      score += term.includes('/') || term.includes('.') ? 3.2 : 1.4;
+    }
+    if (item.relativePath.toLowerCase().includes(term)) {
+      score += 2.6;
+    }
+  }
+
+  if (item.scope === 'project') score += 0.8;
+  if (item.kind === 'memory') score += 0.4;
+  return score;
+}
+
+function buildNativeAgentMemoryContext(snapshot: ClaudeMemorySnapshot | null, focusText: string, workspaceSummary: string) {
+  if (!snapshot) return '';
+
+  const searchTerms = extractSearchTerms(`${focusText}\n${workspaceSummary}`);
+
+  const sections = [
+    'Workspace memory snapshot for this project.',
+    `Workspace root: ${snapshot.workspaceRoot}`,
+    `Instruction files: ${snapshot.instructionFiles.length}`,
+    `Auto memory files: ${snapshot.autoMemoryFiles.length}`,
+    `Auto memory: ${snapshot.autoMemoryEnabled ? 'enabled' : 'disabled'}`
+  ];
+
+  if (snapshot.notices.length) {
+    sections.push(`Notices: ${snapshot.notices.join(' | ')}`);
+  }
+
+  const memoryItems = [...snapshot.instructionFiles, ...snapshot.autoMemoryFiles]
+    .map((item) => ({ item, score: scoreNativeMemoryItem(item, searchTerms) }))
+    .sort((left, right) => right.score - left.score || right.item.updatedAt - left.item.updatedAt)
+    .slice(0, MAX_NATIVE_MEMORY_ITEMS);
+
+  if (memoryItems.length) {
+    sections.push(`Relevant memory excerpts${searchTerms.length ? ` for: ${searchTerms.join(', ')}` : ''}:`);
+    for (const { item, score } of memoryItems) {
+      const preview = item.preview ? truncateInspectorText(item.preview, MAX_NATIVE_MEMORY_PREVIEW_CHARS) : '(empty)';
+      sections.push(`[${item.scope}/${item.kind}] ${item.relativePath} · score ${score.toFixed(2)}\n${preview}`);
+    }
+  }
+
+  const hiddenCount = snapshot.instructionFiles.length + snapshot.autoMemoryFiles.length - memoryItems.length;
+  if (hiddenCount > 0) {
+    sections.push(`Additional memory files omitted from prompt for brevity: ${hiddenCount}`);
+  }
+
+  return sections.join('\n\n');
 }
 
 function stripJsonFence(value: string) {
@@ -477,7 +653,7 @@ const CLI_NOISE_LINE_PATTERNS = [
   /^\.{3,}$/,
   /^\[process exited/i,
   /^\d+%\|/,
-  /^[|\\/\-]{2,}$/,
+  /^[|\\/-]{2,}$/,
   /^\s*thinking\s*$/i,
   /^press (enter|return|y|n)/i,
   /^use arrow keys/i,
@@ -525,7 +701,7 @@ function isCliVisualNoiseLine(value: string) {
   const asciiLetters = withoutNoiseChars.match(/[a-z]/gi) ?? [];
   const digits = withoutNoiseChars.match(/\d/g) ?? [];
   const cjkChars = withoutNoiseChars.match(/[\u3400-\u9fff]/g) ?? [];
-  const punctuationOnly = withoutNoiseChars.replace(/[._,;:!?()[\]{}'"`~\-]/g, '');
+  const punctuationOnly = withoutNoiseChars.replace(/[._,;:!?()[\]{}'"`~-]/g, '');
 
   if (cjkChars.length > 0) {
     return false;
@@ -535,8 +711,14 @@ function isCliVisualNoiseLine(value: string) {
 }
 
 function sanitizeCliText(value: string) {
-  return applyBackspaces(stripAnsiSequences(value))
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+  const withoutControlChars = [...applyBackspaces(stripAnsiSequences(value))]
+    .filter((char) => {
+      const code = char.charCodeAt(0);
+      return code >= 32 || char === '\n' || char === '\r' || char === '\t';
+    })
+    .join('');
+
+  return withoutControlChars
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n');
 }
@@ -830,6 +1012,7 @@ export function ChatPage(props: {
   profiles: ModelProfile[];
   activeProfileId: string;
   onSelectProfile: (profileId: string) => void;
+  onOpenGitPage: () => void;
   isDrawerOpen: boolean;
   onToggleDrawer: () => void;
   onRunCommandInTerminal: (command: string, timeoutMs?: number) => Promise<TerminalCommandResult>;
@@ -837,19 +1020,13 @@ export function ChatPage(props: {
   onSendPromptToClaudeCli: (prompt: string) => Promise<void>;
   onInterruptClaudeCli: () => Promise<void>;
 }) {
-  const { settings, profiles, activeProfileId, onSelectProfile, isDrawerOpen, onRunCommandInTerminal, onInterruptAgentRun, onSendPromptToClaudeCli } = props;
+  const { settings, profiles, activeProfileId, onOpenGitPage, onSelectProfile, isDrawerOpen, onRunCommandInTerminal, onInterruptAgentRun, onSendPromptToClaudeCli } = props;
 
   const workspacePanelRef = useRef<WorkspacePanelHandle | null>(null);
   const drawerWidthRef = useRef(420);
   const dragStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const [input, setInput] = useState('');
-  const [threadsByProfile, setThreadsByProfile] = useState<ThreadMap>(() => {
-    const initial: ThreadMap = {};
-    for (const profile of profiles) {
-      initial[profile.id] = loadStoredThread(profile.id);
-    }
-    return initial;
-  });
+  const [threadStore, setThreadStore] = useState<ThreadStore>(() => loadStoredThreadState(profiles));
   const [isStreaming, setIsStreaming] = useState(false);
   const [drawerWidth, setDrawerWidth] = useState(420);
   const [workspaceContext, setWorkspaceContext] = useState<WorkspacePanelContext>({
@@ -884,7 +1061,7 @@ export function ChatPage(props: {
   const [skillsError, setSkillsError] = useState<string | null>(null);
   const [skillsRefreshTick, setSkillsRefreshTick] = useState(0);
   const [inspectorDrawerOpen, setInspectorDrawerOpen] = useState(false);
-  const [inspectorSection, setInspectorSection] = useState<ClaudeInspectorSection>('overview');
+  const [inspectorSection, setInspectorSection] = useState<InspectorSection>('overview');
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [historyQuery, setHistoryQuery] = useState('');
   const [memorySnapshot, setMemorySnapshot] = useState<ClaudeMemorySnapshot | null>(null);
@@ -899,11 +1076,14 @@ export function ChatPage(props: {
   const [selectedInspectorSkillContent, setSelectedInspectorSkillContent] = useState('');
   const [selectedInspectorSkillLoading, setSelectedInspectorSkillLoading] = useState(false);
   const [selectedInspectorSkillError, setSelectedInspectorSkillError] = useState<string | null>(null);
+  const [nativeAgentInspectorSnapshot, setNativeAgentInspectorSnapshot] = useState<NativeAgentInspectorSnapshot | null>(null);
   const [pendingAgentQuestion, setPendingAgentQuestion] = useState<PendingAgentQuestion | null>(null);
   const [isComposing, setIsComposing] = useState(false);
+  const [profileSwitchNotice, setProfileSwitchNotice] = useState<string | null>(null);
   const activeStreamRef = useRef<{ close: () => void } | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const shouldStickToBottomRef = useRef(true);
+  const profileSwitchNoticeTimerRef = useRef<number | null>(null);
   const agentCancelRequestedRef = useRef(false);
   const agentProgressRef = useRef<string[]>([]);
   const agentRunActiveRef = useRef(false);
@@ -917,6 +1097,58 @@ export function ChatPage(props: {
   const claudeCliSawVisibleReplyRef = useRef(false);
   const claudeCliBufferedReplyRef = useRef('');
   const lastMirroredTerminalInputRef = useRef<{ text: string; at: number } | null>(null);
+  const threadPersistTimerRef = useRef<number | null>(null);
+  const pendingThreadPersistRef = useRef<{ profileId: string; messages: Msg[]; updatedAt: number } | null>(null);
+  const { threadsByProfile, threadUpdatedAtByProfile, threadSummaryByProfile } = threadStore;
+
+  function clearThreadPersistTimer() {
+    if (threadPersistTimerRef.current === null) return;
+    window.clearTimeout(threadPersistTimerRef.current);
+    threadPersistTimerRef.current = null;
+  }
+
+  function flushPendingThreadPersist() {
+    const pending = pendingThreadPersistRef.current;
+    if (!pending) return;
+
+    const threadKey = storageKey(pending.profileId);
+    const metaKey = historyMetaKey(pending.profileId);
+
+    if (pending.messages.length === 0) {
+      localStorage.removeItem(threadKey);
+      localStorage.removeItem(metaKey);
+    } else {
+      localStorage.setItem(threadKey, JSON.stringify(pending.messages));
+      localStorage.setItem(metaKey, JSON.stringify({ updatedAt: pending.updatedAt }));
+    }
+
+    pendingThreadPersistRef.current = null;
+    clearThreadPersistTimer();
+  }
+
+  function scheduleThreadPersist(profileId: string, messages: Msg[], updatedAt: number) {
+    const pending = pendingThreadPersistRef.current;
+    if (pending && pending.profileId !== profileId) {
+      flushPendingThreadPersist();
+    }
+
+    pendingThreadPersistRef.current = {
+      profileId,
+      messages,
+      updatedAt
+    };
+    clearThreadPersistTimer();
+    threadPersistTimerRef.current = window.setTimeout(() => {
+      flushPendingThreadPersist();
+    }, THREAD_PERSIST_DEBOUNCE_MS);
+  }
+
+  function dropPendingThreadPersist(profileId: string) {
+    const pending = pendingThreadPersistRef.current;
+    if (!pending || pending.profileId !== profileId) return;
+    pendingThreadPersistRef.current = null;
+    clearThreadPersistTimer();
+  }
 
   function clearClaudeCliIdleTimer() {
     if (claudeCliIdleTimerRef.current === null) return;
@@ -934,6 +1166,83 @@ export function ChatPage(props: {
     claudeCliBufferedReplyRef.current = '';
   }
 
+  function clearProfileSwitchNoticeTimer() {
+    if (profileSwitchNoticeTimerRef.current === null) return;
+    window.clearTimeout(profileSwitchNoticeTimerRef.current);
+    profileSwitchNoticeTimerRef.current = null;
+  }
+
+  function showProfileSwitchNotice(profileId: string) {
+    const profile = profiles.find((item) => item.id === profileId);
+    if (!profile) return;
+    clearProfileSwitchNoticeTimer();
+    setProfileSwitchNotice(`Switched to ${profile.name} · ${modeLabelFor(profile.interactionMode)} · ${providerLabelFor(profile.providerId)}`);
+    profileSwitchNoticeTimerRef.current = window.setTimeout(() => {
+      setProfileSwitchNotice(null);
+      profileSwitchNoticeTimerRef.current = null;
+    }, 2600);
+  }
+
+  function handleProfileSelection(profileId: string) {
+    if (profileId === activeProfileId) return;
+    onSelectProfile(profileId);
+    showProfileSwitchNotice(profileId);
+  }
+
+  useEffect(() => {
+    return () => {
+      clearProfileSwitchNoticeTimer();
+    };
+  }, []);
+
+  useEffect(() => {
+    setThreadStore((prev) => {
+      const nextThreads: ThreadMap = {};
+      const nextUpdatedAt: ThreadUpdatedAtMap = {};
+      const nextSummaries: ThreadSummaryMap = {};
+      let changed = false;
+
+      for (const profile of profiles) {
+        if (profile.id in prev.threadsByProfile) {
+          nextThreads[profile.id] = prev.threadsByProfile[profile.id];
+          nextSummaries[profile.id] = prev.threadSummaryByProfile[profile.id] ?? buildThreadSummary(prev.threadsByProfile[profile.id]);
+        } else {
+          const thread = loadStoredThread(profile.id);
+          nextThreads[profile.id] = thread;
+          nextSummaries[profile.id] = buildThreadSummary(thread);
+          changed = true;
+        }
+
+        if (profile.id in prev.threadUpdatedAtByProfile) {
+          nextUpdatedAt[profile.id] = prev.threadUpdatedAtByProfile[profile.id];
+        } else {
+          const updatedAt = loadHistoryUpdatedAt(profile.id);
+          if (updatedAt > 0) {
+            nextUpdatedAt[profile.id] = updatedAt;
+          }
+          changed = true;
+        }
+      }
+
+      if (!changed) {
+        const prevThreadKeys = Object.keys(prev.threadsByProfile);
+        const prevUpdatedKeys = Object.keys(prev.threadUpdatedAtByProfile);
+        const prevSummaryKeys = Object.keys(prev.threadSummaryByProfile);
+        if (prevThreadKeys.length !== profiles.length || prevUpdatedKeys.length !== Object.keys(nextUpdatedAt).length || prevSummaryKeys.length !== profiles.length) {
+          changed = true;
+        }
+      }
+
+      return changed
+        ? {
+            threadsByProfile: nextThreads,
+            threadUpdatedAtByProfile: nextUpdatedAt,
+            threadSummaryByProfile: nextSummaries
+          }
+        : prev;
+    });
+  }, [profiles]);
+
   function beginClaudeCliTurn(promptText: string) {
     clearClaudeCliIdleTimer();
     claudeCliTurnStartedAtRef.current = Date.now();
@@ -944,21 +1253,14 @@ export function ChatPage(props: {
     claudeCliBufferedReplyRef.current = '';
   }
 
-  const messages = useMemo(() => threadsByProfile[activeProfileId] ?? loadStoredThread(activeProfileId), [activeProfileId, threadsByProfile]);
+  const messages = threadsByProfile[activeProfileId] ?? EMPTY_THREAD;
+  const activeThreadUpdatedAt = threadUpdatedAtByProfile[activeProfileId] ?? 0;
+  const isClaudeCliMode = settings.interactionMode === 'claude_cli';
+  const isNativeAgentMode = settings.interactionMode === 'claude_code';
 
   useEffect(() => {
-    const threadKey = storageKey(activeProfileId);
-    const metaKey = historyMetaKey(activeProfileId);
-
-    if (messages.length === 0) {
-      localStorage.removeItem(threadKey);
-      localStorage.removeItem(metaKey);
-      return;
-    }
-
-    localStorage.setItem(threadKey, JSON.stringify(messages));
-    localStorage.setItem(metaKey, JSON.stringify({ updatedAt: Date.now() }));
-  }, [activeProfileId, messages]);
+    scheduleThreadPersist(activeProfileId, messages, activeThreadUpdatedAt);
+  }, [activeProfileId, activeThreadUpdatedAt, messages]);
 
   useLayoutEffect(() => {
     const el = messagesRef.current;
@@ -968,6 +1270,7 @@ export function ChatPage(props: {
 
   useEffect(() => {
     return () => {
+      flushPendingThreadPersist();
       activeStreamRef.current?.close();
       activeStreamRef.current = null;
       agentRunActiveRef.current = false;
@@ -1112,7 +1415,7 @@ export function ChatPage(props: {
   }, [claudeRuntimeState.rawTail, claudeRuntimeState.events, settings.interactionMode]);
 
   useEffect(() => {
-    if (settings.interactionMode !== 'claude_cli') {
+    if (settings.interactionMode !== 'claude_cli' && settings.interactionMode !== 'claude_code') {
       setMemorySnapshot(null);
       setMemoryLoading(false);
       setMemoryError(null);
@@ -1142,7 +1445,7 @@ export function ChatPage(props: {
         if (cancelled) return;
         setMemorySnapshot(null);
         setMemoryLoading(false);
-        setMemoryError(error instanceof Error ? error.message : 'Unable to inspect Claude memory');
+        setMemoryError(error instanceof Error ? error.message : 'Unable to inspect workspace memory');
       });
 
     return () => {
@@ -1253,12 +1556,47 @@ export function ChatPage(props: {
   }, []);
 
   function setCurrentMessages(updater: Msg[] | ((prev: Msg[]) => Msg[])) {
-    setThreadsByProfile((prev) => {
-      const current = prev[activeProfileId] ?? loadStoredThread(activeProfileId);
+    setThreadStore((prev) => {
+      const current = prev.threadsByProfile[activeProfileId] ?? EMPTY_THREAD;
       const nextMessages = typeof updater === 'function' ? updater(current) : updater;
-      return {
-        ...prev,
+      const nextThreads = {
+        ...prev.threadsByProfile,
         [activeProfileId]: nextMessages
+      };
+      const nextSummaries = {
+        ...prev.threadSummaryByProfile,
+        [activeProfileId]: buildThreadSummary(nextMessages)
+      };
+
+      if (nextMessages.length === 0) {
+        if (!(activeProfileId in prev.threadUpdatedAtByProfile)) {
+          const restSummaries = { ...nextSummaries };
+          delete restSummaries[activeProfileId];
+          return {
+            threadsByProfile: nextThreads,
+            threadUpdatedAtByProfile: prev.threadUpdatedAtByProfile,
+            threadSummaryByProfile: restSummaries
+          };
+        }
+
+        const restUpdatedAt = { ...prev.threadUpdatedAtByProfile };
+        delete restUpdatedAt[activeProfileId];
+        const restSummaries = { ...nextSummaries };
+        delete restSummaries[activeProfileId];
+        return {
+          threadsByProfile: nextThreads,
+          threadUpdatedAtByProfile: restUpdatedAt,
+          threadSummaryByProfile: restSummaries
+        };
+      }
+
+      return {
+        threadsByProfile: nextThreads,
+        threadUpdatedAtByProfile: {
+          ...prev.threadUpdatedAtByProfile,
+          [activeProfileId]: Date.now()
+        },
+        threadSummaryByProfile: nextSummaries
       };
     });
   }
@@ -1370,6 +1708,26 @@ export function ChatPage(props: {
     return `${settings.name} · ${modeLabel} · Anthropic-compatible: ${settings.baseUrl.trim() || 'https://api.anthropic.com'} · model: ${settings.model.trim() || '(missing model)'}`;
   }, [settings]);
 
+  const currentProfileSummary = useMemo(() => {
+    return `${settings.name} · ${modeLabelFor(settings.interactionMode)} · ${providerLabelFor(settings.providerId)}`;
+  }, [settings]);
+
+  const currentProfileDetail = useMemo(() => {
+    if (settings.interactionMode === 'claude_cli') {
+      return "Runtime source: local Claude CLI from PATH. Provider and model are managed by the CLI runtime.";
+    }
+
+    if (settings.providerId === 'github_copilot') {
+      return `Gateway ${settings.baseUrl.trim() || 'http://127.0.0.1:4141'} · model ${settings.model.trim() || '(missing model)'}`;
+    }
+
+    if (settings.providerId === 'openai_compat') {
+      return `Gateway ${settings.baseUrl.trim() || '(missing baseUrl)'} · model ${settings.model.trim() || '(missing model)'}`;
+    }
+
+    return `Endpoint ${settings.baseUrl.trim() || 'https://api.anthropic.com'} · model ${settings.model.trim() || '(missing model)'}`;
+  }, [settings]);
+
   const connectionKey = useMemo(
     () => [settings.interactionMode, settings.providerId, settings.baseUrl.trim(), settings.apiKey.trim(), settings.model.trim()].join('|'),
     [settings.apiKey, settings.baseUrl, settings.interactionMode, settings.model, settings.providerId]
@@ -1455,17 +1813,44 @@ export function ChatPage(props: {
     return lines.join('\n');
   }, [settings.interactionMode, workspaceContext]);
 
-  function buildChatMessages(nextMessages: Msg[]): ChatMessage[] {
+  function captureNativeAgentInspectorSnapshot(options: {
+    requestMode: 'structured' | 'legacy';
+    outgoingText: string;
+    memoryContext: string;
+    systemPrompt: string;
+    payload: unknown;
+    progressLines: string[];
+    toolEvents: NativeAgentToolEvent[];
+    lastResponse?: string;
+  }) {
+    setNativeAgentInspectorSnapshot({
+      updatedAt: Date.now(),
+      requestMode: options.requestMode,
+      outgoingText: options.outgoingText,
+      workspaceSummary,
+      memoryContext: options.memoryContext,
+      systemPrompt: options.systemPrompt,
+      payload: JSON.stringify(options.payload, null, 2),
+      lastResponse: options.lastResponse?.trim() ?? '',
+      progressLines: [...options.progressLines],
+      toolEvents: [...options.toolEvents]
+    });
+  }
+
+  function buildChatMessages(nextMessages: Msg[], nativeMemoryContext = ''): ChatMessage[] {
     const modeInstruction = settings.interactionMode === 'claude_code'
       ? 'Operate like a persistent coding agent in an ongoing workspace session. Maintain continuity across turns, continue prior plans without restating everything, prefer concrete next actions, and stay focused on editing, running, and validating project work.'
       : 'You are operating inside a desktop workspace editor. Use the provided workspace context to reason about the current project. When proposing file changes, reference concrete file paths and explain the intended edits clearly.';
 
-    const contextPrefix: ChatMessage[] = workspaceContext.workspaceRoot
-      ? [
-          { role: 'system', content: modeInstruction },
-          { role: 'system', content: workspaceSummary }
-        ]
-      : [{ role: 'system', content: modeInstruction }];
+    const contextPrefix: ChatMessage[] = [{ role: 'system', content: modeInstruction }];
+
+    if (settings.interactionMode === 'claude_code' && nativeMemoryContext) {
+      contextPrefix.push({ role: 'system', content: nativeMemoryContext });
+    }
+
+    if (workspaceContext.workspaceRoot) {
+      contextPrefix.push({ role: 'system', content: workspaceSummary });
+    }
 
     return [
       ...contextPrefix,
@@ -1475,8 +1860,8 @@ export function ChatPage(props: {
     ];
   }
 
-  function buildAgentSystemPrompt() {
-    return [
+  function buildAgentSystemPrompt(nativeMemoryContext = '') {
+    const sections = [
       'You are an autonomous coding agent for this workspace.',
       'Maintain continuity across turns and keep working until the task is complete or genuinely blocked.',
       'Use the provided tools for filesystem and terminal access instead of describing tool calls in plain text or JSON.',
@@ -1485,7 +1870,13 @@ export function ChatPage(props: {
       'Prefer inspecting the workspace before editing, prefer targeted patches over full rewrites, and run validation commands when they are relevant.',
       'When the task is complete, answer the user directly in normal prose.',
       workspaceSummary
-    ].join('\n\n');
+    ];
+
+    if (nativeMemoryContext) {
+      sections.push(nativeMemoryContext);
+    }
+
+    return sections.join('\n\n');
   }
 
   function buildAgentSessionMessages(nextMessages: Msg[]): AgentSessionMessage[] {
@@ -1495,7 +1886,7 @@ export function ChatPage(props: {
     }));
   }
 
-  function buildAgentMessages(baseMessages: Msg[]): ChatMessage[] {
+  function buildAgentMessages(baseMessages: Msg[], nativeMemoryContext = ''): ChatMessage[] {
     const toolInstruction: ChatMessage = {
       role: 'system',
       content: [
@@ -1526,10 +1917,10 @@ export function ChatPage(props: {
       ].join('\n')
     };
 
-    return [toolInstruction, ...buildChatMessages(baseMessages)];
+    return [toolInstruction, ...buildChatMessages(baseMessages, nativeMemoryContext)];
   }
 
-  async function requestAgentTurn(reqMessages: AgentSessionMessage[]) {
+  async function requestAgentTurn(reqMessages: AgentSessionMessage[], systemPrompt: string) {
     return await new Promise<AgentTurnResult>((resolve, reject) => {
       let text = '';
       let stopReason: string | undefined;
@@ -1541,7 +1932,7 @@ export function ChatPage(props: {
         baseUrl: settings.baseUrl.trim() ? settings.baseUrl : undefined,
         apiKey: settings.apiKey,
         model: settings.model,
-        system: buildAgentSystemPrompt(),
+        system: systemPrompt,
         messages: reqMessages,
         temperature: 0.1,
         maxTokens: 4096
@@ -1753,7 +2144,10 @@ export function ChatPage(props: {
     const transcriptBase: Msg[] = [...messages, { role: 'user', content: outgoingText }];
     const visiblePrefix: Msg[] = [...messages, { role: 'user', content: outgoingText }, { role: 'assistant', content: 'Agent: planning…' }];
     const agentMessages = buildAgentSessionMessages(transcriptBase);
+    const nativeMemoryContext = buildNativeAgentMemoryContext(memorySnapshot, outgoingText, workspaceSummary);
+    const systemPrompt = buildAgentSystemPrompt(nativeMemoryContext);
     const progress: string[] = ['Agent: planning…'];
+    const toolEvents: NativeAgentToolEvent[] = [];
     agentProgressRef.current = [...progress];
     setAgentProgressLines([...progress]);
     appendAgentProgress(`Agent session: provider=${settings.providerId}`);
@@ -1762,7 +2156,25 @@ export function ChatPage(props: {
 
     for (let step = 0; step < 8; step += 1) {
       assertAgentNotCancelled();
-      const turn = await requestAgentTurn(agentMessages);
+      captureNativeAgentInspectorSnapshot({
+        requestMode: 'structured',
+        outgoingText,
+        memoryContext: nativeMemoryContext,
+        systemPrompt,
+        payload: {
+          kind: 'agent_session',
+          providerId: settings.providerId,
+          baseUrl: settings.baseUrl.trim() ? settings.baseUrl : undefined,
+          model: settings.model,
+          system: systemPrompt,
+          temperature: 0.1,
+          maxTokens: 4096,
+          messages: agentMessages
+        },
+        progressLines: progress,
+        toolEvents
+      });
+      const turn = await requestAgentTurn(agentMessages, systemPrompt);
       assertAgentNotCancelled();
       if (turn.stopReason) {
         progress.push(`Agent stop reason: ${turn.stopReason}`);
@@ -1781,6 +2193,25 @@ export function ChatPage(props: {
         const finalContent = progress.length > 1
           ? `${finalMessage}\n\n---\n${progress.join('\n')}`
           : finalMessage;
+        captureNativeAgentInspectorSnapshot({
+          requestMode: 'structured',
+          outgoingText,
+          memoryContext: nativeMemoryContext,
+          systemPrompt,
+          payload: {
+            kind: 'agent_session',
+            providerId: settings.providerId,
+            baseUrl: settings.baseUrl.trim() ? settings.baseUrl : undefined,
+            model: settings.model,
+            system: systemPrompt,
+            temperature: 0.1,
+            maxTokens: 4096,
+            messages: agentMessages
+          },
+          progressLines: progress,
+          toolEvents,
+          lastResponse: finalContent
+        });
         setCurrentMessages([...messages, { role: 'user', content: outgoingText }, { role: 'assistant', content: finalContent }]);
         return;
       }
@@ -1807,6 +2238,14 @@ export function ChatPage(props: {
           ? `Agent tool: ${summarizeAgentAction(normalized)}`
           : `Agent tool: ${toolUse.name}`;
 
+        toolEvents.push({
+          id: `${toolUse.id}:request`,
+          tool: toolUse.name,
+          phase: 'request',
+          summary,
+          detail: JSON.stringify(toolUse.input, null, 2)
+        });
+
         progress.push(summary);
         appendAgentProgress(summary);
         updateAgentPlaceholder(outgoingText, `Agent: ${summary}`);
@@ -1826,6 +2265,14 @@ export function ChatPage(props: {
         assertAgentNotCancelled();
 
         const displayToolResult = toolResult.length > 1200 ? `${toolResult.slice(0, 1200)}\n...[truncated]` : toolResult;
+        toolEvents.push({
+          id: `${toolUse.id}:result`,
+          tool: toolUse.name,
+          phase: 'result',
+          summary: `Result: ${toolUse.name}`,
+          detail: displayToolResult,
+          isError
+        });
         progress.push(displayToolResult);
         appendAgentProgress(displayToolResult);
         appendAgentProgress(`Agent tool_result ${toolUse.name}#${toolUse.id} ${isError ? 'error' : 'ok'}`);
@@ -1844,7 +2291,27 @@ export function ChatPage(props: {
     }
 
     agentRunActiveRef.current = false;
-    setCurrentMessages([...messages, { role: 'user', content: outgoingText }, { role: 'assistant', content: `${progress.join('\n\n')}\n\nAgent stopped after reaching the step limit.` }]);
+    const stoppedContent = `${progress.join('\n\n')}\n\nAgent stopped after reaching the step limit.`;
+    captureNativeAgentInspectorSnapshot({
+      requestMode: 'structured',
+      outgoingText,
+      memoryContext: nativeMemoryContext,
+      systemPrompt,
+      payload: {
+        kind: 'agent_session',
+        providerId: settings.providerId,
+        baseUrl: settings.baseUrl.trim() ? settings.baseUrl : undefined,
+        model: settings.model,
+        system: systemPrompt,
+        temperature: 0.1,
+        maxTokens: 4096,
+        messages: agentMessages
+      },
+      progressLines: progress,
+      toolEvents,
+      lastResponse: stoppedContent
+    });
+    setCurrentMessages([...messages, { role: 'user', content: outgoingText }, { role: 'assistant', content: stoppedContent }]);
   }
 
   async function runLegacyClaudeCodeAgent(outgoingText: string) {
@@ -1857,7 +2324,9 @@ export function ChatPage(props: {
     const transcriptBase: Msg[] = [...messages, { role: 'user', content: outgoingText }];
     const visiblePrefix: Msg[] = [...messages, { role: 'user', content: outgoingText }, { role: 'assistant', content: 'Agent: planning…' }];
     const agentMessages: Msg[] = [...transcriptBase];
+    const nativeMemoryContext = buildNativeAgentMemoryContext(memorySnapshot, outgoingText, workspaceSummary);
     const progress: string[] = ['Agent: planning…'];
+    const toolEvents: NativeAgentToolEvent[] = [];
     agentProgressRef.current = [...progress];
     setAgentProgressLines([...progress]);
 
@@ -1865,12 +2334,48 @@ export function ChatPage(props: {
 
     for (let step = 0; step < 8; step += 1) {
       assertAgentNotCancelled();
-      const responseText = await requestModelText(buildAgentMessages(agentMessages));
+      const reqMessages = buildAgentMessages(agentMessages, nativeMemoryContext);
+      captureNativeAgentInspectorSnapshot({
+        requestMode: 'legacy',
+        outgoingText,
+        memoryContext: nativeMemoryContext,
+        systemPrompt: reqMessages.filter((item) => item.role === 'system').map((item) => item.content).join('\n\n---\n\n'),
+        payload: {
+          kind: 'chat',
+          providerId: settings.providerId,
+          baseUrl: settings.baseUrl.trim() ? settings.baseUrl : undefined,
+          model: settings.model,
+          interactionMode: settings.interactionMode,
+          temperature: 0.1,
+          messages: reqMessages
+        },
+        progressLines: progress,
+        toolEvents
+      });
+      const responseText = await requestModelText(reqMessages);
       assertAgentNotCancelled();
       const action = parseAgentAction(responseText);
 
       if (!action) {
         agentRunActiveRef.current = false;
+        captureNativeAgentInspectorSnapshot({
+          requestMode: 'legacy',
+          outgoingText,
+          memoryContext: nativeMemoryContext,
+          systemPrompt: reqMessages.filter((item) => item.role === 'system').map((item) => item.content).join('\n\n---\n\n'),
+          payload: {
+            kind: 'chat',
+            providerId: settings.providerId,
+            baseUrl: settings.baseUrl.trim() ? settings.baseUrl : undefined,
+            model: settings.model,
+            interactionMode: settings.interactionMode,
+            temperature: 0.1,
+            messages: reqMessages
+          },
+          progressLines: progress,
+          toolEvents,
+          lastResponse: responseText.trim() || 'Agent returned an empty response.'
+        });
         setCurrentMessages([...messages, { role: 'user', content: outgoingText }, { role: 'assistant', content: responseText.trim() || 'Agent returned an empty response.' }]);
         return;
       }
@@ -1880,11 +2385,36 @@ export function ChatPage(props: {
         const finalContent = progress.length > 1
           ? `${action.message.trim()}\n\n---\n${progress.join('\n')}`
           : action.message.trim();
+        captureNativeAgentInspectorSnapshot({
+          requestMode: 'legacy',
+          outgoingText,
+          memoryContext: nativeMemoryContext,
+          systemPrompt: reqMessages.filter((item) => item.role === 'system').map((item) => item.content).join('\n\n---\n\n'),
+          payload: {
+            kind: 'chat',
+            providerId: settings.providerId,
+            baseUrl: settings.baseUrl.trim() ? settings.baseUrl : undefined,
+            model: settings.model,
+            interactionMode: settings.interactionMode,
+            temperature: 0.1,
+            messages: reqMessages
+          },
+          progressLines: progress,
+          toolEvents,
+          lastResponse: finalContent || 'Done.'
+        });
         setCurrentMessages([...messages, { role: 'user', content: outgoingText }, { role: 'assistant', content: finalContent || 'Done.' }]);
         return;
       }
 
       const summary = `Agent tool: ${summarizeAgentAction(action)}`;
+      toolEvents.push({
+        id: `legacy-${step}:request`,
+        tool: action.tool,
+        phase: 'request',
+        summary,
+        detail: JSON.stringify(action.args, null, 2)
+      });
       progress.push(summary);
       appendAgentProgress(summary);
       updateAgentPlaceholder(outgoingText, `Agent: ${summary}`);
@@ -1893,8 +2423,17 @@ export function ChatPage(props: {
 
       assertAgentNotCancelled();
 
-      progress.push(toolResult.length > 1200 ? `${toolResult.slice(0, 1200)}\n...[truncated]` : toolResult);
-      appendAgentProgress(toolResult.length > 1200 ? `${toolResult.slice(0, 1200)}\n...[truncated]` : toolResult);
+      const displayToolResult = toolResult.length > 1200 ? `${toolResult.slice(0, 1200)}\n...[truncated]` : toolResult;
+      toolEvents.push({
+        id: `legacy-${step}:result`,
+        tool: action.tool,
+        phase: 'result',
+        summary: `Result: ${action.tool}`,
+        detail: displayToolResult,
+        isError: /status:\s*failed/i.test(toolResult)
+      });
+      progress.push(displayToolResult);
+      appendAgentProgress(displayToolResult);
       updateAgentPlaceholder(outgoingText, 'Agent: planning next step…');
 
       agentMessages.push({ role: 'assistant', content: JSON.stringify(action) });
@@ -1902,7 +2441,26 @@ export function ChatPage(props: {
     }
 
     agentRunActiveRef.current = false;
-    setCurrentMessages([...messages, { role: 'user', content: outgoingText }, { role: 'assistant', content: `${progress.join('\n\n')}\n\nAgent stopped after reaching the step limit.` }]);
+    const stoppedContent = `${progress.join('\n\n')}\n\nAgent stopped after reaching the step limit.`;
+    captureNativeAgentInspectorSnapshot({
+      requestMode: 'legacy',
+      outgoingText,
+      memoryContext: nativeMemoryContext,
+      systemPrompt: buildAgentMessages(agentMessages, nativeMemoryContext).filter((item) => item.role === 'system').map((item) => item.content).join('\n\n---\n\n'),
+      payload: {
+        kind: 'chat',
+        providerId: settings.providerId,
+        baseUrl: settings.baseUrl.trim() ? settings.baseUrl : undefined,
+        model: settings.model,
+        interactionMode: settings.interactionMode,
+        temperature: 0.1,
+        messages: buildAgentMessages(agentMessages, nativeMemoryContext)
+      },
+      progressLines: progress,
+      toolEvents,
+      lastResponse: stoppedContent
+    });
+    setCurrentMessages([...messages, { role: 'user', content: outgoingText }, { role: 'assistant', content: stoppedContent }]);
   }
 
   async function runClaudeCodeAgent(outgoingText: string) {
@@ -2035,8 +2593,10 @@ export function ChatPage(props: {
 
   function resetCurrentThread() {
     rejectPendingAgentQuestion('Agent run cancelled');
+    dropPendingThreadPersist(activeProfileId);
     setCurrentMessages([]);
     localStorage.removeItem(storageKey(activeProfileId));
+    localStorage.removeItem(historyMetaKey(activeProfileId));
     resetAgentRunState();
   }
 
@@ -2082,24 +2642,22 @@ export function ChatPage(props: {
   const sessionHistoryItems = useMemo(() => {
     return profiles
       .map((profile) => {
-        const thread = threadsByProfile[profile.id] ?? loadStoredThread(profile.id);
-        if (!thread.length) return null;
-        const lastUser = [...thread].reverse().find((item) => item.role === 'user')?.content ?? '';
-        const lastAssistant = [...thread].reverse().find((item) => item.role === 'assistant')?.content ?? '';
-        const updatedAt = loadHistoryUpdatedAt(profile.id);
+        const summary = threadSummaryByProfile[profile.id];
+        if (!summary || summary.messageCount === 0) return null;
+        const updatedAt = threadUpdatedAtByProfile[profile.id] ?? 0;
 
         return {
           profileId: profile.id,
           profileName: profile.name,
           updatedAt,
-          messageCount: thread.length,
-          lastUserText: previewText(lastUser, 90),
-          lastAssistantText: previewText(lastAssistant, 120)
+          messageCount: summary.messageCount,
+          lastUserText: summary.lastUserText,
+          lastAssistantText: summary.lastAssistantText
         } as SessionHistoryItem;
       })
       .filter((item): item is SessionHistoryItem => Boolean(item))
       .sort((a, b) => b.updatedAt - a.updatedAt);
-  }, [profiles, threadsByProfile]);
+  }, [profiles, threadSummaryByProfile, threadUpdatedAtByProfile]);
   const filteredSessionHistoryItems = useMemo(() => {
     const query = historyQuery.trim().toLowerCase();
     if (!query) return sessionHistoryItems;
@@ -2109,7 +2667,7 @@ export function ChatPage(props: {
         || item.lastAssistantText.toLowerCase().includes(query);
     });
   }, [historyQuery, sessionHistoryItems]);
-  const canOpenInspector = settings.interactionMode === 'claude_cli';
+  const canOpenInspector = isClaudeCliMode || isNativeAgentMode;
   const memoryInstructionGroups = useMemo<ClaudeMemoryGroup[]>(() => {
     const snapshot = memorySnapshot;
     if (!snapshot) return [];
@@ -2163,6 +2721,32 @@ export function ChatPage(props: {
 
     return lines;
   }, [claudeRuntimeState.connected, claudeRuntimeState.lastPlan, claudeRuntimeState.pendingApproval, claudeRuntimeState.pendingQuestion, claudeRuntimeState.resumeInfo.restoredFromStorage, claudeRuntimeState.running, claudeRuntimeState.workspaceRoot, claudeSkills, memorySnapshot, snapshotSavedAtText, workspaceContext.workspaceRoot]);
+  const nativeAgentSnapshotUpdatedAtText = useMemo(() => {
+    return nativeAgentInspectorSnapshot ? formatTimestamp(nativeAgentInspectorSnapshot.updatedAt) : null;
+  }, [nativeAgentInspectorSnapshot]);
+  const nativeAgentContextSummaryLines = useMemo(() => {
+    const lines = [
+      `Workspace: ${workspaceContext.workspaceRoot ?? 'Not selected'}`,
+      `Session: ${isStreaming ? 'Running' : 'Idle'}`,
+      `Provider: ${providerLabelFor(settings.providerId)} · ${settings.model}`,
+      `Memory: ${memorySnapshot ? `${memorySnapshot.instructionFiles.length} instruction files, ${memorySnapshot.autoMemoryFiles.length} auto memory files` : 'Workspace memory unavailable'}`
+    ];
+
+    if (nativeAgentInspectorSnapshot) {
+      lines.push(`Latest request: ${nativeAgentInspectorSnapshot.requestMode} · ${nativeAgentSnapshotUpdatedAtText ?? 'just now'}`);
+      lines.push(`Prompt: ${previewText(nativeAgentInspectorSnapshot.outgoingText, 140)}`);
+    }
+
+    if (agentProgressLines.length) {
+      lines.push(`Live progress: ${agentProgressLines[agentProgressLines.length - 1]}`);
+    }
+
+    return lines;
+  }, [agentProgressLines, isStreaming, memorySnapshot, nativeAgentInspectorSnapshot, nativeAgentSnapshotUpdatedAtText, settings.model, settings.providerId, workspaceContext.workspaceRoot]);
+  const inspectorTitle = isNativeAgentMode ? 'Native Agent Inspector' : 'Claude Inspector';
+  const inspectorSubtitle = isNativeAgentMode
+    ? 'Inspect Native Agent memory, assembled model inputs, and recent run activity.'
+    : 'Unified runtime, memory, and skills view for the current Claude CLI workspace.';
 
   async function previewInspectorFile(item: ClaudeInspectorFile) {
     const workspaceRoot = claudeRuntimeState.workspaceRoot || workspaceContext.workspaceRoot || null;
@@ -2268,7 +2852,7 @@ export function ChatPage(props: {
     setHistoryDrawerOpen(false);
   }
 
-  function openInspectorDrawer(section: ClaudeInspectorSection = 'overview') {
+  function openInspectorDrawer(section: InspectorSection = 'overview') {
     setHistoryDrawerOpen(false);
     setInspectorSection(section);
     setInspectorDrawerOpen(true);
@@ -2279,7 +2863,7 @@ export function ChatPage(props: {
   }
 
   function selectHistorySession(profileId: string) {
-    onSelectProfile(profileId);
+    handleProfileSelection(profileId);
     closeHistoryDrawer();
   }
 
@@ -2291,7 +2875,7 @@ export function ChatPage(props: {
     openHistoryDrawer();
   }
 
-  function toggleInspectorDrawer(section: ClaudeInspectorSection = 'overview') {
+  function toggleInspectorDrawer(section: InspectorSection = 'overview') {
     if (!canOpenInspector) return;
     if (inspectorDrawerOpen && inspectorSection === section) {
       closeInspectorDrawer();
@@ -2304,7 +2888,7 @@ export function ChatPage(props: {
     <div className="page chatPage">
       <div className="workspaceWithDrawer">
         <div className="workspaceMain">
-          <WorkspacePanel ref={workspacePanelRef} settings={settings} onContextChange={setWorkspaceContext} onRunCommandInTerminal={onRunCommandInTerminal} />
+          <WorkspacePanel ref={workspacePanelRef} settings={settings} onContextChange={setWorkspaceContext} onOpenGitPage={onOpenGitPage} onRunCommandInTerminal={onRunCommandInTerminal} />
         </div>
 
         <div className={isDrawerOpen ? 'chatDrawer open' : 'chatDrawer'} style={isDrawerOpen ? { width: `${drawerWidth}px` } : undefined}>
@@ -2326,7 +2910,7 @@ export function ChatPage(props: {
                 </div>
               </div>
               <div className="chatHeaderActions">
-                <select value={activeProfileId} onChange={(e) => onSelectProfile(e.target.value)} className="chatProfileSelect">
+                <select value={activeProfileId} onChange={(e) => handleProfileSelection(e.target.value)} className="chatProfileSelect">
                   {profiles.map((profile) => (
                     <option key={profile.id} value={profile.id}>
                       {profile.name} · {modeLabelFor(profile.interactionMode)} · {providerLabelFor(profile.providerId)}
@@ -2340,6 +2924,15 @@ export function ChatPage(props: {
             {currentConnectionState?.status === 'error' ? (
               <div className="chatHeaderNotice error">{currentConnectionState.message}</div>
             ) : null}
+
+            {profileSwitchNotice ? (
+              <div className="chatHeaderNotice info">{profileSwitchNotice}</div>
+            ) : null}
+
+            <div className="chatProfileMeta" title={connectionHint}>
+              <div className="chatProfileMetaTitle">Current profile: {currentProfileSummary}</div>
+              <div className="chatProfileMetaDetail">{currentProfileDetail}</div>
+            </div>
 
             <div
               ref={messagesRef}
@@ -2367,7 +2960,7 @@ export function ChatPage(props: {
                       <div className="meta">
                         <div>{m.role}</div>
                       </div>
-                      <div className="bubble"><ChatBubbleContent content={m.content} /></div>
+                      <div className="bubble"><ChatBubbleContent content={m.content} renderMarkdown={isNativeAgentMode && m.role === 'assistant'} /></div>
                     </div>
                   ))}
                 </div>
@@ -2418,8 +3011,8 @@ export function ChatPage(props: {
                 className={`assistantSideBarItem ${inspectorDrawerOpen ? 'active' : ''}`}
                 onClick={() => toggleInspectorDrawer('overview')}
                 disabled={!canOpenInspector}
-                title={canOpenInspector ? (inspectorDrawerOpen ? 'Hide Claude Inspector' : 'Show Claude Inspector') : 'Claude Inspector is available in Claude CLI mode'}
-                aria-label={canOpenInspector ? (inspectorDrawerOpen ? 'Hide Claude Inspector' : 'Show Claude Inspector') : 'Claude Inspector unavailable in current mode'}
+                title={canOpenInspector ? (inspectorDrawerOpen ? `Hide ${inspectorTitle}` : `Show ${inspectorTitle}`) : 'Inspector unavailable in current mode'}
+                aria-label={canOpenInspector ? (inspectorDrawerOpen ? `Hide ${inspectorTitle}` : `Show ${inspectorTitle}`) : 'Inspector unavailable in current mode'}
               >
                 <svg className="assistantSideBarGlyph" viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M6 6.5h12a1.5 1.5 0 0 1 1.5 1.5v8a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 16V8A1.5 1.5 0 0 1 6 6.5Z" />
@@ -2430,7 +3023,271 @@ export function ChatPage(props: {
               </button>
             </aside>
 
-            {settings.interactionMode === 'claude_cli' ? (
+            {isNativeAgentMode ? (
+              <>
+                <button
+                  type="button"
+                  className={inspectorDrawerOpen ? 'inspectorDrawerBackdrop open' : 'inspectorDrawerBackdrop'}
+                  aria-label="Close Native Agent inspector panel"
+                  onClick={closeInspectorDrawer}
+                />
+                <aside className={inspectorDrawerOpen ? 'inspectorDrawerPanel open' : 'inspectorDrawerPanel'}>
+                  <div className="claudeInspectorPanel">
+                    <div className="claudeInspectorHeader">
+                      <div>
+                        <div className="cardTitle">{inspectorTitle}</div>
+                        <div className="claudeMemoryMeta">{inspectorSubtitle}</div>
+                      </div>
+                      <div className="claudeInspectorActions">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMemoryRefreshTick((value) => value + 1);
+                          }}
+                          disabled={memoryLoading}
+                        >
+                          {memoryLoading ? 'Refreshing…' : 'Refresh'}
+                        </button>
+                        <button type="button" onClick={closeInspectorDrawer}>Close</button>
+                      </div>
+                    </div>
+
+                    <div className="claudeInspectorTabs" role="tablist" aria-label="Native Agent inspector sections">
+                      <button type="button" className={inspectorSection === 'overview' ? 'claudeInspectorTab active' : 'claudeInspectorTab'} onClick={() => setInspectorSection('overview')}>
+                        Overview
+                      </button>
+                      <button type="button" className={inspectorSection === 'memory' ? 'claudeInspectorTab active' : 'claudeInspectorTab'} onClick={() => setInspectorSection('memory')}>
+                        Memory
+                      </button>
+                      <button type="button" className={inspectorSection === 'model-input' ? 'claudeInspectorTab active' : 'claudeInspectorTab'} onClick={() => setInspectorSection('model-input')}>
+                        Model Input
+                      </button>
+                      <button type="button" className={inspectorSection === 'tooling' ? 'claudeInspectorTab active' : 'claudeInspectorTab'} onClick={() => setInspectorSection('tooling')}>
+                        Tooling
+                      </button>
+                    </div>
+
+                    {inspectorSection === 'overview' ? (
+                      <div className="claudeInspectorBody">
+                        <div className="claudeInspectorSummaryGrid">
+                          <div className="claudeMemorySummaryCard">
+                            <span className="claudeMemorySummaryLabel">Session</span>
+                            <span className="claudeMemorySummaryValue">{isStreaming ? 'Running' : 'Idle'}</span>
+                          </div>
+                          <div className="claudeMemorySummaryCard">
+                            <span className="claudeMemorySummaryLabel">Request Mode</span>
+                            <span className="claudeMemorySummaryValue">{nativeAgentInspectorSnapshot?.requestMode ?? 'Not run yet'}</span>
+                          </div>
+                          <div className="claudeMemorySummaryCard">
+                            <span className="claudeMemorySummaryLabel">Instruction files</span>
+                            <span className="claudeMemorySummaryValue">{memorySnapshot?.instructionFiles.length ?? 0}</span>
+                          </div>
+                          <div className="claudeMemorySummaryCard">
+                            <span className="claudeMemorySummaryLabel">Auto memory files</span>
+                            <span className="claudeMemorySummaryValue">{memorySnapshot?.autoMemoryFiles.length ?? 0}</span>
+                          </div>
+                          <div className="claudeMemorySummaryCard">
+                            <span className="claudeMemorySummaryLabel">Progress lines</span>
+                            <span className="claudeMemorySummaryValue">{(nativeAgentInspectorSnapshot?.progressLines.length ?? agentProgressLines.length) || 0}</span>
+                          </div>
+                          <div className="claudeMemorySummaryCard">
+                            <span className="claudeMemorySummaryLabel">Tool events</span>
+                            <span className="claudeMemorySummaryValue">{nativeAgentInspectorSnapshot?.toolEvents.length ?? 0}</span>
+                          </div>
+                          <div className="claudeMemorySummaryCard">
+                            <span className="claudeMemorySummaryLabel">Last updated</span>
+                            <span className="claudeMemorySummaryValue">{nativeAgentSnapshotUpdatedAtText ?? 'Not available'}</span>
+                          </div>
+                        </div>
+
+                        <div className="claudeInspectorSectionCallout">
+                          <div className="cardTitle">Current Context Summary</div>
+                          <div className="claudeInspectorSummaryList">
+                            {nativeAgentContextSummaryLines.map((line) => (
+                              <div key={line} className="claudeInspectorSummaryLine">{line}</div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="claudeInspectorSectionCallout">
+                          <div className="cardTitle">Latest Response</div>
+                          {nativeAgentInspectorSnapshot?.lastResponse ? (
+                            <div className="bubbleRichContent bubbleMarkdownContent">
+                              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{nativeAgentInspectorSnapshot.lastResponse}</ReactMarkdown>
+                            </div>
+                          ) : (
+                            <div className="claudeInspectorSectionCalloutMeta">No completed Native Agent response has been recorded yet.</div>
+                          )}
+                        </div>
+
+                        <div className="claudeInspectorSectionCallout">
+                          <div className="cardTitle">Recent Activity</div>
+                          {(nativeAgentInspectorSnapshot?.progressLines.length || agentProgressLines.length) ? (
+                            <div className="claudeRuntimeList">
+                              {(isStreaming ? agentProgressLines : nativeAgentInspectorSnapshot?.progressLines ?? []).slice(-16).map((line, index) => (
+                                <div key={`${index}-${line.slice(0, 32)}`} className="claudeRuntimeListItem">{line}</div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="claudeInspectorSectionCalloutMeta">No Native Agent activity recorded yet.</div>
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {inspectorSection === 'memory' ? (
+                      <div className="claudeInspectorBody">
+                        {memorySnapshot ? (
+                          <div className="claudeMemorySummaryGrid">
+                            <div className="claudeMemorySummaryCard">
+                              <span className="claudeMemorySummaryLabel">Workspace</span>
+                              <span className="claudeMemorySummaryValue">{memorySnapshot.workspaceRoot}</span>
+                            </div>
+                            <div className="claudeMemorySummaryCard">
+                              <span className="claudeMemorySummaryLabel">Auto memory</span>
+                              <span className="claudeMemorySummaryValue">{memorySnapshot.autoMemoryEnabled ? 'Enabled' : 'Disabled'}</span>
+                            </div>
+                            <div className="claudeMemorySummaryCard">
+                              <span className="claudeMemorySummaryLabel">Memory root</span>
+                              <span className="claudeMemorySummaryValue">{memorySnapshot.autoMemoryRoot}</span>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {memoryError ? <div className="claudeMemoryNotice error">{memoryError}</div> : null}
+                        {!memoryError && memoryLoading ? <div className="claudeMemoryNotice">Loading workspace memory…</div> : null}
+                        {!memoryError && !memoryLoading && memorySnapshot?.notices.length ? (
+                          <div className="claudeMemoryNoticeGroup">
+                            {memorySnapshot.notices.map((notice) => (
+                              <div key={notice} className="claudeMemoryNotice">{notice}</div>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        {memoryInstructionGroups.map((group) => (
+                          <div key={group.key} className="claudeMemorySection">
+                            <div className="claudeMemorySectionHeader">
+                              <div className="cardTitle">{group.title}</div>
+                              <div className="claudeMemoryMeta">{group.items.length} files</div>
+                            </div>
+                            {group.items.length ? (
+                              <div className="claudeMemoryList">
+                                {group.items.map((item) => renderInspectorMemoryItem(item))}
+                              </div>
+                            ) : (
+                              <div className="claudeMemoryEmpty">{group.emptyText}</div>
+                            )}
+                          </div>
+                        ))}
+
+                        <div className="claudeMemorySection">
+                          <div className="claudeMemorySectionHeader">
+                            <div className="cardTitle">Auto Memory</div>
+                            <div className="claudeMemoryMeta">{memorySnapshot?.autoMemoryFiles.length ?? 0} files</div>
+                          </div>
+                          {memorySnapshot?.autoMemoryFiles.length ? (
+                            <div className="claudeMemoryList">
+                              {memorySnapshot.autoMemoryFiles.map((item) => renderInspectorMemoryItem(item))}
+                            </div>
+                          ) : (
+                            <div className="claudeMemoryEmpty">No auto memory files found yet for this workspace.</div>
+                          )}
+                        </div>
+
+                        {selectedInspectorFile ? (
+                          <div className="claudeInspectorViewer">
+                            <div className="claudeInspectorViewerHeader">
+                              <div>
+                                <div className="cardTitle">{selectedInspectorFile.relativePath}</div>
+                                <div className="claudeMemoryMeta">{selectedInspectorFile.displayPath}</div>
+                              </div>
+                              <div className="claudeInspectorActions">
+                                <button type="button" onClick={() => void openInspectorSource(selectedInspectorFile)}>
+                                  {isPathInside(workspaceContext.workspaceRoot, selectedInspectorFile.path) ? 'Open in Workspace' : 'Refresh Preview'}
+                                </button>
+                                <button type="button" onClick={() => void revealInspectorFile(selectedInspectorFile)}>Reveal</button>
+                              </div>
+                            </div>
+                            {selectedInspectorFileError ? <div className="claudeMemoryNotice error">{selectedInspectorFileError}</div> : null}
+                            {selectedInspectorFileLoading ? <div className="claudeMemoryNotice">Loading full contents…</div> : null}
+                            {!selectedInspectorFileLoading && !selectedInspectorFileError ? (
+                              <pre className="claudeInspectorViewerContent">{selectedInspectorFileContent || '(empty file)'}</pre>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {inspectorSection === 'model-input' ? (
+                      <div className="claudeInspectorBody">
+                        <div className="claudeInspectorSectionCallout">
+                          <div className="cardTitle">Prompt</div>
+                          <div className="claudeInspectorSectionCalloutMeta">{nativeAgentInspectorSnapshot ? previewText(nativeAgentInspectorSnapshot.outgoingText, 220) : 'No prompt recorded yet.'}</div>
+                        </div>
+
+                        <div className="claudeInspectorViewer">
+                          <div className="claudeInspectorViewerHeader">
+                            <div>
+                              <div className="cardTitle">System Prompt</div>
+                              <div className="claudeMemoryMeta">Native Agent behavioral instructions plus workspace/session memory.</div>
+                            </div>
+                          </div>
+                          <pre className="claudeInspectorViewerContent">{nativeAgentInspectorSnapshot?.systemPrompt || '(not captured yet)'}</pre>
+                        </div>
+
+                        <div className="claudeInspectorViewer">
+                          <div className="claudeInspectorViewerHeader">
+                            <div>
+                              <div className="cardTitle">Memory Context</div>
+                              <div className="claudeMemoryMeta">Workspace instruction files and auto memory assembled for Native Agent.</div>
+                            </div>
+                          </div>
+                          <pre className="claudeInspectorViewerContent">{nativeAgentInspectorSnapshot?.memoryContext || '(no workspace memory included)'}</pre>
+                        </div>
+
+                        <div className="claudeInspectorViewer">
+                          <div className="claudeInspectorViewerHeader">
+                            <div>
+                              <div className="cardTitle">Assembled Model Payload</div>
+                              <div className="claudeMemoryMeta">Exact request body captured before sending the latest Native Agent turn.</div>
+                            </div>
+                          </div>
+                          <pre className="claudeInspectorViewerContent">{nativeAgentInspectorSnapshot?.payload || '(not captured yet)'}</pre>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {inspectorSection === 'tooling' ? (
+                      <div className="claudeInspectorBody">
+                        <div className="claudeInspectorSectionCallout">
+                          <div className="cardTitle">Tool Calls and Results</div>
+                          <div className="claudeInspectorSectionCalloutMeta">Captured request/result pairs from the latest Native Agent run.</div>
+                        </div>
+
+                        {nativeAgentInspectorSnapshot?.toolEvents.length ? (
+                          <div className="claudeInspectorTimelineList">
+                            {nativeAgentInspectorSnapshot.toolEvents.map((event) => (
+                              <div key={event.id} className={`claudeInspectorToolEvent${event.isError ? ' isError' : ''}`}>
+                                <div className="claudeInspectorTimelineTop">
+                                  <span className="claudeInspectorTimelineLabel">{event.summary}</span>
+                                  <span className="claudeInspectorToolBadge">{event.phase}</span>
+                                </div>
+                                <div className="claudeInspectorSectionCalloutMeta">{event.tool}</div>
+                                <pre className="claudeInspectorViewerContent">{event.detail}</pre>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="claudeInspectorSectionCalloutMeta">No tool calls captured yet for this Native Agent session.</div>
+                        )}
+                      </div>
+                    ) : null}
+                  </div>
+                </aside>
+              </>
+            ) : null}
+
+            {isClaudeCliMode ? (
               <>
                 <button
                   type="button"
@@ -2442,8 +3299,8 @@ export function ChatPage(props: {
                   <div className="claudeInspectorPanel">
                     <div className="claudeInspectorHeader">
                       <div>
-                        <div className="cardTitle">Claude Inspector</div>
-                        <div className="claudeMemoryMeta">Unified runtime, memory, and skills view for the current Claude CLI workspace.</div>
+                        <div className="cardTitle">{inspectorTitle}</div>
+                        <div className="claudeMemoryMeta">{inspectorSubtitle}</div>
                       </div>
                       <div className="claudeInspectorActions">
                         <button type="button" onClick={() => setShowClaudeCliDetails((v) => !v)}>

@@ -31,6 +31,16 @@ export function Sidebar(props: {
           </svg>
         </button>
         <button
+          className={activePage === 'settings' ? 'navItem navIcon active' : 'navItem navIcon'}
+          onClick={() => onNavigate('settings')}
+          title="Settings"
+          aria-label="Settings"
+        >
+          <svg className="navGlyph" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 8.4a3.6 3.6 0 1 0 0 7.2 3.6 3.6 0 0 0 0-7.2zm0-4.4 1 .2.5 2a6.9 6.9 0 0 1 1.6.9l1.9-.8.8.8-.8 1.9c.4.5.7 1 .9 1.6l2 .5.2 1-.2 1-2 .5a6.9 6.9 0 0 1-.9 1.6l.8 1.9-.8.8-1.9-.8a6.9 6.9 0 0 1-1.6.9l-.5 2-1 .2-1-.2-.5-2a6.9 6.9 0 0 1-1.6-.9l-1.9.8-.8-.8.8-1.9a6.9 6.9 0 0 1-.9-1.6l-2-.5-.2-1 .2-1 2-.5c.2-.6.5-1.1.9-1.6l-.8-1.9.8-.8 1.9.8a6.9 6.9 0 0 1 1.6-.9l.5-2 1-.2z" />
+          </svg>
+        </button>
+        <button
           className={activePage === 'git' ? 'navItem navIcon active' : 'navItem navIcon'}
           onClick={() => onNavigate('git')}
           title="Git"
@@ -39,16 +49,6 @@ export function Sidebar(props: {
           <svg className="navGlyph" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M7 6.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5Zm0 0v10a3 3 0 0 0 3 3h1.5" />
             <path d="M17 12.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5Zm0-6a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5Zm-7.5 12h5" />
-          </svg>
-        </button>
-        <button
-          className={activePage === 'settings' ? 'navItem navIcon active' : 'navItem navIcon'}
-          onClick={() => onNavigate('settings')}
-          title="Settings"
-          aria-label="Settings"
-        >
-          <svg className="navGlyph" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M12 8.4a3.6 3.6 0 1 0 0 7.2 3.6 3.6 0 0 0 0-7.2zm0-4.4 1 .2.5 2a6.9 6.9 0 0 1 1.6.9l1.9-.8.8.8-.8 1.9c.4.5.7 1 .9 1.6l2 .5.2 1-.2 1-2 .5a6.9 6.9 0 0 1-.9 1.6l.8 1.9-.8.8-1.9-.8a6.9 6.9 0 0 1-1.6.9l-.5 2-1 .2-1-.2-.5-2a6.9 6.9 0 0 1-1.6-.9l-1.9.8-.8-.8.8-1.9a6.9 6.9 0 0 1-.9-1.6l-2-.5-.2-1 .2-1 2-.5c.2-.6.5-1.1.9-1.6l-.8-1.9.8-.8 1.9.8a6.9 6.9 0 0 1 1.6-.9l.5-2 1-.2z" />
           </svg>
         </button>
       </div>

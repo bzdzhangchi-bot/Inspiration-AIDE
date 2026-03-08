@@ -95,12 +95,16 @@ function normalizeByInteraction(profile: ModelProfile, nextMode: InteractionMode
   }
 
   if (nextMode === 'claude_code') {
-    const nextProvider: ProviderId = profile.providerId === 'github_copilot' ? 'anthropic' : profile.providerId;
+    const keepCopilotDefaults = profile.providerId === 'github_copilot';
+
     return {
       ...profile,
       interactionMode: 'claude_code',
-      providerId: nextProvider,
-      baseUrl: profile.baseUrl.trim() ? profile.baseUrl : 'https://api.anthropic.com',
+      baseUrl: profile.baseUrl.trim()
+        ? profile.baseUrl
+        : keepCopilotDefaults
+          ? 'http://127.0.0.1:4141'
+          : 'https://api.anthropic.com',
       model: shouldSuggestClaudeModel(profile.model) ? 'claude-sonnet-4-5' : profile.model
     };
   }
@@ -145,9 +149,6 @@ function validateProfile(profile: ModelProfile): ValidationIssue[] {
     issues.push({ severity: 'error', message: 'Model is required.' });
   }
 
-  if (profile.interactionMode === 'claude_code' && profile.providerId === 'github_copilot') {
-    issues.push({ severity: 'error', message: 'Native Agent mode does not support Copilot provider. Use Anthropic or Compatible Gateway.' });
-  }
 
   if ((profile.providerId === 'openai_compat' || profile.providerId === 'github_copilot') && !baseUrl) {
     issues.push({ severity: 'error', message: `${baseUrlLabelFor(profile.providerId)} is required.` });
@@ -164,6 +165,40 @@ function validateProfile(profile: ModelProfile): ValidationIssue[] {
   return issues;
 }
 
+function areProfilesEqual(left: ModelProfile, right: ModelProfile) {
+  return left.id === right.id
+    && left.name === right.name
+    && left.providerId === right.providerId
+    && left.baseUrl === right.baseUrl
+    && left.apiKey === right.apiKey
+    && left.model === right.model
+    && left.interactionMode === right.interactionMode
+    && left.inlineCompletionsEnabled === right.inlineCompletionsEnabled
+    && left.agentPatchesEnabled === right.agentPatchesEnabled;
+}
+
+function areSettingsEqual(left: SettingsState, right: SettingsState) {
+  if (left === right) return true;
+  if (left.activeProfileId !== right.activeProfileId) return false;
+  if (left.uiFontSize !== right.uiFontSize) return false;
+  if (left.chatFontSize !== right.chatFontSize) return false;
+  if (left.editorFontSize !== right.editorFontSize) return false;
+  if (left.terminalFontSize !== right.terminalFontSize) return false;
+  if (left.uiFontFamily !== right.uiFontFamily) return false;
+  if (left.chatFontFamily !== right.chatFontFamily) return false;
+  if (left.editorFontFamily !== right.editorFontFamily) return false;
+  if (left.terminalFontFamily !== right.terminalFontFamily) return false;
+  if (left.profiles.length !== right.profiles.length) return false;
+
+  for (let index = 0; index < left.profiles.length; index += 1) {
+    if (!areProfilesEqual(left.profiles[index], right.profiles[index])) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 export function SettingsPage(props: {
   settings: SettingsState;
   onChange: (next: SettingsState) => void;
@@ -174,13 +209,25 @@ export function SettingsPage(props: {
   const [tab, setTab] = useState<'model' | 'appearance'>('model');
   const [draft, setDraft] = useState<SettingsState>(settings);
   const [selectedProfileId, setSelectedProfileId] = useState(settings.activeProfileId);
+  const [isProfilesHelpOpen, setIsProfilesHelpOpen] = useState(false);
 
   useEffect(() => {
     setDraft(settings);
     setSelectedProfileId(settings.activeProfileId);
   }, [settings]);
 
-  const isDirty = JSON.stringify(draft) !== JSON.stringify(settings);
+  useEffect(() => {
+    if (!isProfilesHelpOpen) return;
+
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setIsProfilesHelpOpen(false);
+    }
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isProfilesHelpOpen]);
+
+  const isDirty = useMemo(() => !areSettingsEqual(draft, settings), [draft, settings]);
   const selectedProfile = useMemo(() => {
     return draft.profiles.find((profile) => profile.id === selectedProfileId) ?? draft.profiles[0] ?? null;
   }, [draft.profiles, selectedProfileId]);
@@ -210,6 +257,13 @@ export function SettingsPage(props: {
     return validationByProfile.get(selectedProfile.id) ?? [];
   }, [selectedProfile, validationByProfile]);
   const canSave = isDirty && totalErrors === 0;
+  const defaultProfile = useMemo(() => {
+    return draft.profiles.find((profile) => profile.id === draft.activeProfileId) ?? draft.profiles[0] ?? null;
+  }, [draft.activeProfileId, draft.profiles]);
+  const savedDefaultProfile = useMemo(() => {
+    return settings.profiles.find((profile) => profile.id === settings.activeProfileId) ?? settings.profiles[0] ?? null;
+  }, [settings.activeProfileId, settings.profiles]);
+  const defaultProfileChanged = draft.activeProfileId !== settings.activeProfileId;
   const isNativeAgentProfile = selectedProfile?.interactionMode === 'claude_code';
   const isClaudeCliProfile = selectedProfile?.interactionMode === 'claude_cli';
   const selectedProfileSummary = useMemo(() => {
@@ -217,24 +271,6 @@ export function SettingsPage(props: {
     return profileMetaText(selectedProfile);
   }, [selectedProfile]);
 
-  useEffect(() => {
-    if (!selectedProfile) return;
-    if (selectedProfile.interactionMode !== 'claude_code') return;
-    if (selectedProfile.providerId !== 'github_copilot') return;
-
-    setDraft((prev) => ({
-      ...prev,
-      profiles: prev.profiles.map((profile) => {
-        if (profile.id !== selectedProfile.id) return profile;
-        return {
-          ...profile,
-          providerId: 'anthropic',
-          baseUrl: profile.baseUrl.trim() ? profile.baseUrl : 'https://api.anthropic.com',
-          model: shouldSuggestClaudeModel(profile.model) ? 'claude-sonnet-4-5' : profile.model
-        };
-      })
-    }));
-  }, [selectedProfile]);
 
   function updateSelectedProfile(updater: (profile: ModelProfile) => ModelProfile) {
     if (!selectedProfile) return;
@@ -299,12 +335,13 @@ export function SettingsPage(props: {
     setSelectedProfileId(nextProfile.id);
   }
 
-  function duplicateProfile() {
-    if (!selectedProfile) return;
+  function duplicateProfile(profileId?: string) {
+    const sourceProfile = draft.profiles.find((profile) => profile.id === profileId) ?? selectedProfile;
+    if (!sourceProfile) return;
     const duplicate: ModelProfile = {
-      ...selectedProfile,
+      ...sourceProfile,
       id: makeProfileId(),
-      name: `${selectedProfile.name} Copy`
+      name: `${sourceProfile.name} Copy`
     };
     setDraft((prev) => ({
       ...prev,
@@ -313,19 +350,26 @@ export function SettingsPage(props: {
     setSelectedProfileId(duplicate.id);
   }
 
-  function removeProfile() {
-    if (!selectedProfile || draft.profiles.length <= 1) return;
-    const nextProfiles = draft.profiles.filter((profile) => profile.id !== selectedProfile.id);
+  function removeProfile(profileId?: string) {
+    const targetId = profileId ?? selectedProfile?.id;
+    if (!targetId || draft.profiles.length <= 1) return;
+    const targetProfile = draft.profiles.find((profile) => profile.id === targetId);
+    const confirmed = window.confirm(`Remove profile "${targetProfile?.name ?? 'this profile'}"?\n\nThis only changes your local saved profiles and can be undone only before you save.`);
+    if (!confirmed) return;
+    const nextProfiles = draft.profiles.filter((profile) => profile.id !== targetId);
     const fallbackId = nextProfiles[0]?.id ?? '';
+    const nextSelectedId = selectedProfileId === targetId ? fallbackId : selectedProfileId;
     setDraft((prev) => ({
       ...prev,
-      activeProfileId: prev.activeProfileId === selectedProfile.id ? fallbackId : prev.activeProfileId,
+      activeProfileId: prev.activeProfileId === targetId ? fallbackId : prev.activeProfileId,
       profiles: nextProfiles
     }));
-    setSelectedProfileId(fallbackId);
+    setSelectedProfileId(nextSelectedId);
   }
 
   function renderCommonProfileFields(profile: ModelProfile) {
+    const isDefaultProfile = draft.activeProfileId === profile.id;
+
     return (
       <>
         <div className="settingsSection">
@@ -337,14 +381,24 @@ export function SettingsPage(props: {
           <div className="form">
             <div className="row">
               <div className="label">Active in chat</div>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <input
-                  type="radio"
-                  checked={draft.activeProfileId === profile.id}
-                  onChange={() => setDraft({ ...draft, activeProfileId: profile.id })}
-                />
-                Use this profile by default
-              </label>
+              <div className="profileDefaultRow">
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <input
+                    type="radio"
+                    checked={isDefaultProfile}
+                    onChange={() => setDraft({ ...draft, activeProfileId: profile.id })}
+                  />
+                  Use this profile by default
+                </label>
+                <button
+                  type="button"
+                  className={isDefaultProfile ? 'secondaryButton is-active' : 'secondaryButton'}
+                  onClick={() => setDraft({ ...draft, activeProfileId: profile.id })}
+                  disabled={isDefaultProfile}
+                >
+                  {isDefaultProfile ? 'Default profile' : 'Set as default'}
+                </button>
+              </div>
             </div>
 
             <div className="row">
@@ -438,6 +492,15 @@ export function SettingsPage(props: {
               <span className="providerCardTitle">Compatible Gateway</span>
               <span className="providerCardMeta">Use a proxy or compatible endpoint when your Claude traffic is routed through another service.</span>
             </button>
+
+            <button
+              type="button"
+              className={profile.providerId === 'github_copilot' ? 'providerCard active' : 'providerCard'}
+              onClick={() => updateSelectedProfile((current) => ({ ...current, providerId: 'github_copilot', baseUrl: current.baseUrl.trim() ? current.baseUrl : 'http://127.0.0.1:4141' }))}
+            >
+              <span className="providerCardTitle">Copilot (local gateway)</span>
+              <span className="providerCardMeta">Use the local gateway at http://127.0.0.1:4141 (POST /v1/messages?beta=true).</span>
+            </button>
           </div>
 
           <div className="settingsMiniNote">
@@ -451,18 +514,26 @@ export function SettingsPage(props: {
             <div className="settingsSectionHint">
               {profile.providerId === 'anthropic'
                 ? 'Provide an Anthropic-compatible endpoint and token. Leave the endpoint empty to use the official Anthropic API.'
-                : 'Provide the gateway URL and credential for your compatible endpoint.'}
+                : profile.providerId === 'github_copilot'
+                  ? 'Provide the local gateway URL. Token is optional if your gateway does not require it.'
+                  : 'Provide the gateway URL and credential for your compatible endpoint.'}
             </div>
           </div>
 
           <div className="form">
-            {profile.providerId === 'openai_compat' || profile.providerId === 'anthropic' ? (
+            {profile.providerId === 'openai_compat' || profile.providerId === 'anthropic' || profile.providerId === 'github_copilot' ? (
               <div className="row">
-                <div className="label">{profile.providerId === 'anthropic' ? 'Endpoint URL' : 'Gateway URL'}</div>
+                <div className="label">{profile.providerId === 'anthropic' ? 'Endpoint URL' : profile.providerId === 'github_copilot' ? 'Gateway URL' : 'Gateway URL'}</div>
                 <input
                   value={profile.baseUrl}
                   onChange={(e) => updateSelectedProfile((current) => ({ ...current, baseUrl: e.target.value }))}
-                  placeholder={profile.providerId === 'anthropic' ? 'https://api.anthropic.com or https://dashscope.aliyuncs.com/apps/anthropic' : 'https://your-gateway.example.com'}
+                  placeholder={
+                    profile.providerId === 'anthropic'
+                      ? 'https://api.anthropic.com or https://dashscope.aliyuncs.com/apps/anthropic'
+                      : profile.providerId === 'github_copilot'
+                        ? 'http://127.0.0.1:4141'
+                        : 'https://your-gateway.example.com'
+                  }
                 />
               </div>
             ) : (
@@ -477,7 +548,13 @@ export function SettingsPage(props: {
               <input
                 value={profile.apiKey}
                 onChange={(e) => updateSelectedProfile((current) => ({ ...current, apiKey: e.target.value }))}
-                placeholder={profile.providerId === 'anthropic' ? 'Anthropic-compatible token' : 'Gateway API key'}
+                placeholder={
+                  profile.providerId === 'anthropic'
+                    ? 'Anthropic-compatible token'
+                    : profile.providerId === 'github_copilot'
+                      ? 'Optional for local Copilot gateway'
+                      : 'Gateway API key'
+                }
               />
             </div>
           </div>
@@ -641,6 +718,7 @@ export function SettingsPage(props: {
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {isDirty ? <div className="pill" style={{ opacity: 1 }}>Unsaved</div> : null}
+          {defaultProfileChanged ? <div className="pill" style={{ opacity: 1 }}>Default profile changed</div> : null}
           {totalErrors > 0 ? <div className="pill" style={{ opacity: 1 }}>{totalErrors} error{totalErrors > 1 ? 's' : ''}</div> : null}
           {totalWarnings > 0 ? <div className="pill" style={{ opacity: 1 }}>{totalWarnings} warning{totalWarnings > 1 ? 's' : ''}</div> : null}
           <button type="button" disabled={!canSave} onClick={() => onChange(draft)}>
@@ -648,6 +726,190 @@ export function SettingsPage(props: {
           </button>
         </div>
       </div>
+
+      {isProfilesHelpOpen ? (
+        <div className="settingsHelpOverlay" role="presentation" onClick={() => setIsProfilesHelpOpen(false)}>
+          <div className="settingsHelpDialog" role="dialog" aria-modal="true" aria-label="Profiles help" onClick={(e) => e.stopPropagation()}>
+            <div className="settingsHelpDialogHeader">
+              <div className="settingsHelpDialogTitle">Profiles help</div>
+              <button type="button" className="settingsHelpCloseButton" aria-label="Close" onClick={() => setIsProfilesHelpOpen(false)}>
+                &times;
+              </button>
+            </div>
+            <div className="settingsHelpDialogBody">
+              <h2>中文</h2>
+              <p>
+                <strong>Profile（配置档）</strong> 是一组可复用的助手配置，包含 provider、gateway / endpoint、token、model，以及
+                <strong>Interaction（交互模式）</strong>。你可以创建多个 profile，在设置页编辑它们，并在聊天页随时切换。
+              </p>
+
+              <h3>Profiles 现在能做什么</h3>
+              <ul>
+                <li>创建、复制、删除多个 profile。</li>
+                <li>为每个 profile 单独保存 provider、base URL、token、model、interaction mode 和能力开关。</li>
+                <li>用 <strong>Active in chat</strong> 把某个 profile 设为默认 profile。</li>
+                <li>在聊天页顶部直接切换 profile；每个 profile 都维护自己的聊天线程和历史摘要。</li>
+                <li>把同一个 provider 配成不同用途，例如一个 profile 做标准聊天，另一个 profile 做 Native Agent。</li>
+              </ul>
+
+              <h3>有两个“选中”概念</h3>
+              <ul>
+                <li><strong>左侧高亮的 profile</strong>：表示你当前正在编辑哪一个 profile。</li>
+                <li><strong>Active in chat / Default</strong>：表示应用默认会用哪一个 profile 进入聊天。</li>
+                <li>聊天页顶部切换 profile 后，当前聊天使用的 profile 也会随之更新，并保存为新的默认选项。</li>
+              </ul>
+
+              <h3>Interaction modes（交互模式）</h3>
+
+              <h4>Standard（标准聊天）</h4>
+              <ul>
+                <li>使用本应用内置的流式聊天请求（streaming tokens）。</li>
+                <li>provider / endpoint / token / model 这些字段都会用于实际 API 请求。</li>
+                <li>适合普通问答、代码解释、轻量修改建议。</li>
+              </ul>
+
+              <h4>Native Agent（应用内置 Agent）</h4>
+              <ul>
+                <li>使用本应用自带的 coding-agent 工作流（工具调用、workspace 上下文、计划/执行过程等）。</li>
+                <li>
+                  需要已打开的 workspace root；如果当前没有 workspace，将会<strong>回退到 Standard</strong> 聊天路径。
+                </li>
+                <li>该模式现在可以使用 Copilot（local gateway）、Anthropic 或 Compatible Gateway，前提是对应 provider 本身可连通。</li>
+                <li>
+                  注意：这里的 “Native Agent” 指的是<strong>本应用内置的 agent 实现</strong>，不是 Claude Code / Claude CLI 本体。
+                </li>
+                <li>更适合“继续做这个重构”“先看看工程再改”“读文件后给出 patch”这类任务。</li>
+              </ul>
+
+              <h4>Claude CLI（claude_cli，CLI 模式）</h4>
+              <ul>
+                <li>将提示词转发给本机的 Claude Code / Claude CLI 运行时来执行。</li>
+                <li>
+                  在该模式下，本页的 provider/model 等设置对实际运行<strong>不生效</strong>：认证、provider 与 model 选择由 CLI 自己管理。
+                </li>
+                <li>适合你希望 GUI 只是“托管/承载”真实 Claude Code 运行时及其审批体验时使用。</li>
+              </ul>
+
+              <h3>Provider（服务商/网关）是什么意思？</h3>
+              <ul>
+                <li><strong>Anthropic</strong>：使用 Anthropic-compatible endpoint + token（如官方 Claude API 或兼容端点）。</li>
+                <li><strong>Compatible Gateway</strong>：使用代理/网关（通常是 OpenAI-compatible 风格），把流量转发到可用的 Claude 能力模型。</li>
+                <li><strong>Copilot</strong>：走本地 gateway，默认地址通常是 `http://127.0.0.1:4141`。现在既可用于 Standard，也可用于 Native Agent。</li>
+              </ul>
+
+              <h3>Capabilities（能力开关）</h3>
+              <ul>
+                <li><strong>Inline completions</strong>：允许该 profile 被编辑器补全请求使用。</li>
+                <li><strong>Agent patches</strong>：允许该 profile 生成工作区 patch 提案。</li>
+                <li>这两个开关是按 profile 单独保存的，不同 profile 可以有不同策略。</li>
+              </ul>
+
+              <h3>常见问题（FAQ）</h3>
+              <ul>
+                <li>
+                  <strong>我选了 Native Agent，但看起来还是 Standard。</strong> 请先确认已打开 workspace；没有 workspace 时，应用会自动回退到标准聊天路径。
+                </li>
+                <li>
+                  <strong>为什么 Claude CLI 模式不读取这里的 API key？</strong> 因为该模式由本机 CLI 管理认证与 provider/model，本 GUI 不会注入这些字段。
+                </li>
+                <li>
+                  <strong>为什么我在设置页点了某个 profile，但聊天还不是它？</strong> 因为“左侧选中”只是进入编辑；要让它成为默认聊天 profile，需要打开该 profile 的 <strong>Active in chat</strong>。
+                </li>
+                <li>
+                  <strong>切换聊天页顶部 profile 会不会丢历史？</strong> 不会。每个 profile 都有自己的线程和摘要，切换后会显示该 profile 对应的聊天内容。
+                </li>
+              </ul>
+
+              <hr />
+
+              <h2>English</h2>
+              <p>
+                A <strong>profile</strong> is a reusable assistant configuration. It stores provider settings, endpoint / gateway information,
+                credentials, model name, and an <strong>Interaction</strong> mode. You can edit multiple profiles here and switch between them in chat.
+              </p>
+
+              <h3>What Profiles Can Do</h3>
+              <ul>
+                <li>Create, duplicate, and remove multiple profiles.</li>
+                <li>Store provider, base URL, token, model, interaction mode, and capability flags per profile.</li>
+                <li>Mark one profile as the default with <strong>Active in chat</strong>.</li>
+                <li>Switch profiles directly from the chat header; each profile keeps its own thread and history summary.</li>
+                <li>Use different profiles for different workflows, for example Standard chat vs Native Agent.</li>
+              </ul>
+
+              <h3>Two Different “Selections”</h3>
+              <ul>
+                <li><strong>The highlighted item in the left list</strong> is the profile you are currently editing.</li>
+                <li><strong>Active in chat / Default</strong> is the profile the app will use by default in chat.</li>
+                <li>Switching the profile from the chat header updates the current chat profile and persists that choice.</li>
+              </ul>
+
+              <h3>Interaction modes</h3>
+
+              <h4>Standard</h4>
+              <ul>
+                <li>Uses this app&apos;s built-in streaming chat runtime.</li>
+                <li>Provider / endpoint / token / model are taken from this form and used for API requests.</li>
+                <li>Best for normal Q&amp;A, code explanation, and lightweight assistance.</li>
+              </ul>
+
+              <h4>Native Agent (built-in agent)</h4>
+              <ul>
+                <li>Uses this app&apos;s built-in coding-agent workflow, including tool use, workspace-aware context, and execution planning.</li>
+                <li>
+                  Requires an opened workspace root. If no workspace is available, the app <strong>falls back to Standard</strong> chat behavior.
+                </li>
+                <li>This mode now works with Copilot (local gateway), Anthropic, or a compatible gateway, as long as the provider connection is valid.</li>
+                <li>
+                  Note: this "Native Agent" is implemented in this app. It is <strong>not</strong> the Claude Code / Claude CLI runtime.
+                </li>
+                <li>Best for tasks like exploring a repo, reading files first, and then producing patches or stepwise changes.</li>
+              </ul>
+
+              <h4>Claude CLI (claude_cli)</h4>
+              <ul>
+                <li>Routes prompts to your local Claude Code/Claude CLI runtime.</li>
+                <li>
+                  In this mode, provider/model settings in this GUI are <strong>ignored</strong> for the actual run (the CLI manages them).
+                </li>
+                <li>Use this when you want the GUI to behave like a shell around the real Claude Code runtime and approvals.</li>
+              </ul>
+
+              <h3>What does Provider mean?</h3>
+              <ul>
+                <li><strong>Anthropic</strong>: use an Anthropic-compatible endpoint + token.</li>
+                <li><strong>Compatible Gateway</strong>: use a proxy / OpenAI-compatible gateway that can route to Claude-capable models.</li>
+                <li><strong>Copilot</strong>: uses a local gateway, typically `http://127.0.0.1:4141`. It can now be used for both Standard chat and Native Agent mode.</li>
+              </ul>
+
+              <h3>Capabilities</h3>
+              <ul>
+                <li><strong>Inline completions</strong>: allows this profile to serve editor completion requests.</li>
+                <li><strong>Agent patches</strong>: allows this profile to generate workspace patch proposals.</li>
+                <li>These switches are stored per profile, so different profiles can have different execution policies.</li>
+              </ul>
+
+              <h3>Common questions</h3>
+              <ul>
+                <li>
+                  <strong>I selected Native Agent but it still looks like Standard.</strong> Make sure a workspace is opened; otherwise the agent
+                  workflow will not start and the app will fall back.
+                </li>
+                <li>
+                  <strong>Why doesn&apos;t Claude CLI mode use the API key from this page?</strong> Because the local CLI manages authentication and
+                  provider/model selection.
+                </li>
+                <li>
+                  <strong>Why did I click a profile in Settings but chat still uses another one?</strong> Because selecting a profile in the left list only opens it for editing. Use <strong>Active in chat</strong> to make it the default chat profile.
+                </li>
+                <li>
+                  <strong>Will I lose history when switching profiles in chat?</strong> No. Each profile keeps its own thread and summary, and chat switches between those stored threads.
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <div className="settingsWorkspace">
         <aside className="card settingsPrimaryNav" aria-label="Settings sections">
@@ -666,27 +928,85 @@ export function SettingsPage(props: {
             <div className="profileListPane">
               <div className="profilePaneHeader">
                 <div className="cardTitle">Profiles</div>
-                <div className="profilePaneMeta">{draft.profiles.length} configured</div>
+                <div className="profilePaneHeaderActions">
+                  <div className="profilePaneMeta">{draft.profiles.length} configured</div>
+                  <div className="profileActionGroup" aria-label="Profile actions">
+                    <button type="button" className="profileActionButton" onClick={addProfile} aria-label="Add profile" title="Add profile">
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M12 5v14M5 12h14" />
+                      </svg>
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    className="settingsHelpIconButton"
+                    aria-label="Profiles help"
+                    title="Profiles help"
+                    onClick={() => setIsProfilesHelpOpen(true)}
+                  >
+                    ?
+                  </button>
+                </div>
               </div>
               <div className="profileListScroll">
                 <div className="profileList">
                   {draft.profiles.map((profile) => (
-                    <button
+                    <div
                       key={profile.id}
-                      type="button"
-                      className={profile.id === selectedProfileId ? 'profileListItem active' : 'profileListItem'}
-                      onClick={() => setSelectedProfileId(profile.id)}
+                      className={profile.id === selectedProfileId ? 'profileListEntry active' : 'profileListEntry'}
                     >
-                      <span className="profileListName">{profile.name}</span>
-                      <span className="profileListMeta">{profileMetaText(profile)}</span>
-                    </button>
+                      <button
+                        type="button"
+                        className="profileListItem"
+                        onClick={() => setSelectedProfileId(profile.id)}
+                      >
+                        <span className="profileListNameRow">
+                          <span className="profileListName">{profile.name}</span>
+                          {draft.activeProfileId === profile.id ? <span className="profileListBadge">Default</span> : null}
+                        </span>
+                        <span className="profileListMeta">{profileMetaText(profile)}</span>
+                      </button>
+                      <div className="profileListItemActions">
+                        <button
+                          type="button"
+                          className="profileActionButton profileActionButtonInline"
+                          aria-label={`Duplicate ${profile.name}`}
+                          title="Duplicate profile"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            duplicateProfile(profile.id);
+                          }}
+                        >
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M9 9.5h8a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 17 20.5H9A1.5 1.5 0 0 1 7.5 19v-8A1.5 1.5 0 0 1 9 9.5Z" />
+                            <path d="M6 14.5H5A1.5 1.5 0 0 1 3.5 13V5A1.5 1.5 0 0 1 5 3.5h8A1.5 1.5 0 0 1 14.5 5v1" />
+                          </svg>
+                        </button>
+                        <button
+                          type="button"
+                          className="profileActionButton profileActionButtonInline danger"
+                          aria-label={`Remove ${profile.name}`}
+                          title="Remove profile"
+                          disabled={draft.profiles.length <= 1}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            removeProfile(profile.id);
+                          }}
+                        >
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M5 7.5h14" />
+                            <path d="M9.5 7.5V5.75A1.25 1.25 0 0 1 10.75 4.5h2.5a1.25 1.25 0 0 1 1.25 1.25V7.5" />
+                            <path d="M8 7.5l.7 10.03A1.5 1.5 0 0 0 10.2 19h3.6a1.5 1.5 0 0 0 1.5-1.47L16 7.5" />
+                            <path d="M10 10.5v5M14 10.5v5" />
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
                   ))}
                 </div>
               </div>
-              <div className="profileListActions">
-                <button type="button" onClick={addProfile}>Add</button>
-                <button type="button" onClick={duplicateProfile} disabled={!selectedProfile}>Duplicate</button>
-                <button type="button" onClick={removeProfile} disabled={draft.profiles.length <= 1}>Remove</button>
+              <div className="profileListHint" role="note">
+                Duplicate and remove are attached to each profile card. Remove stays disabled when only one profile remains.
               </div>
             </div>
 
@@ -698,8 +1018,24 @@ export function SettingsPage(props: {
                       <div className="profileEditorSummaryTitle">{selectedProfile.name}</div>
                       <div className="profileEditorSummaryMeta">{selectedProfileSummary}</div>
                     </div>
-                    {draft.activeProfileId === selectedProfile.id ? <div className="pill" style={{ opacity: 1 }}>Default</div> : null}
+                    <div className="profileEditorSummaryActions">
+                      {draft.activeProfileId === selectedProfile.id ? <div className="pill" style={{ opacity: 1 }}>Default</div> : null}
+                      {draft.activeProfileId !== selectedProfile.id ? (
+                        <button type="button" className="secondaryButton" onClick={() => setDraft((prev) => ({ ...prev, activeProfileId: selectedProfile.id }))}>
+                          Set as default
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
+                  {defaultProfileChanged ? (
+                    <div className="settingsDefaultProfileNotice">
+                      <div className="settingsDefaultProfileNoticeTitle">Default chat profile will change on save</div>
+                      <div className="settingsDefaultProfileNoticeText">
+                        Next default: <strong>{defaultProfile?.name ?? 'Unknown profile'}</strong>
+                        {savedDefaultProfile ? ` · current saved default: ${savedDefaultProfile.name}` : ''}
+                      </div>
+                    </div>
+                  ) : null}
                   {selectedProfileIssues.length ? (
                     <div className="settingsValidationPanel">
                       {selectedProfileIssues.map((issue, index) => (

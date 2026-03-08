@@ -520,9 +520,10 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     agentPatchesEnabled: boolean;
   };
   onContextChange?: (context: WorkspacePanelContext) => void;
+  onOpenGitPage?: () => void;
   onRunCommandInTerminal?: (command: string, timeoutMs?: number) => Promise<unknown>;
 }>(function WorkspacePanel(props, ref) {
-  const { onContextChange, settings } = props;
+  const { onContextChange, onOpenGitPage, settings } = props;
   const panelRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const editorOverlayRef = useRef<HTMLPreElement | null>(null);
@@ -561,6 +562,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   const [loadingDirs, setLoadingDirs] = useState<string[]>([]);
   const [openDocs, setOpenDocs] = useState<OpenDoc[]>([]);
   const [activePath, setActivePath] = useState<string | null>(null);
+  const [activeWorkspaceBranch, setActiveWorkspaceBranch] = useState<string | null>(null);
   const [status, setStatus] = useState<string>('');
   const [rootMenuOpenFor, setRootMenuOpenFor] = useState<string | null>(null);
   const [draggedRoot, setDraggedRoot] = useState<string | null>(null);
@@ -659,6 +661,29 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   useEffect(() => {
     activePathRef.current = activePath;
   }, [activePath]);
+
+  useEffect(() => {
+    if (!workspaceRoot) {
+      setActiveWorkspaceBranch(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    void fsClient.getGitRepository(workspaceRoot)
+      .then((repository) => {
+        if (cancelled) return;
+        setActiveWorkspaceBranch(repository.gitRoot ? repository.branch : null);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setActiveWorkspaceBranch(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceRoot]);
 
   useEffect(() => {
     onContextChange?.({
@@ -1355,6 +1380,15 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
 
       const root = findWorkspaceRootForPath(event.path) ?? workspaceRootRef.current;
       if (!root) return;
+      if (root === workspaceRootRef.current) {
+        void fsClient.getGitRepository(root)
+          .then((repository) => {
+            setActiveWorkspaceBranch(repository.gitRoot ? repository.branch : null);
+          })
+          .catch(() => {
+            setActiveWorkspaceBranch(null);
+          });
+      }
       scheduleWorkspaceRefresh(root, event.path, 'Workspace updated…');
     });
 
@@ -1723,9 +1757,25 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
           <div className="workspaceHeaderMeta">
             <div className="cardTitle">Project</div>
             <div className="workspacePath" title={workspaceRoot ?? 'No project selected'}>
-              {workspaceRoot
-                ? `${activeWorkspaceRootName} · ${workspaceRoots.length} project${workspaceRoots.length > 1 ? 's' : ''} open · ${workspaceRoot}`
-                : 'No project selected'}
+              {workspaceRoot ? (
+                <>
+                  <span className="workspacePathPrimary">
+                    <span className="workspacePathProjectName">{activeWorkspaceRootName}</span>
+                    {activeWorkspaceBranch ? (
+                      <button
+                        type="button"
+                        className="workspaceBranchBadge"
+                        onClick={onOpenGitPage}
+                        title={`Open Git page for ${activeWorkspaceBranch}`}
+                      >
+                        {activeWorkspaceBranch}
+                      </button>
+                    ) : null}
+                    <span>{workspaceRoots.length} project{workspaceRoots.length > 1 ? 's' : ''} open</span>
+                  </span>
+                  <span className="workspacePathLocation">{workspaceRoot}</span>
+                </>
+              ) : 'No project selected'}
             </div>
           </div>
         </div>
