@@ -17,14 +17,20 @@ fi
 rm -rf "$ICONSET_DIR"
 mkdir -p "$ICONSET_DIR"
 
-qlmanage -t -s 1024 -o "$ICON_DIR" "$SOURCE_SVG" >/dev/null 2>&1
-
-if [[ ! -f "$ICON_DIR/app-icon.svg.png" ]]; then
-  echo "Failed to render SVG icon with qlmanage" >&2
-  exit 1
+if qlmanage -t -s 1024 -o "$ICON_DIR" "$SOURCE_SVG" >/dev/null 2>&1; then
+  if [[ -f "$ICON_DIR/app-icon.svg.png" ]]; then
+    mv "$ICON_DIR/app-icon.svg.png" "$SOURCE_PNG"
+  fi
 fi
 
-mv "$ICON_DIR/app-icon.svg.png" "$SOURCE_PNG"
+if [[ ! -f "$SOURCE_PNG" ]]; then
+  if [[ -f "$TARGET_ICNS" ]]; then
+    echo "Using existing macOS icon: $TARGET_ICNS"
+    exit 0
+  fi
+  echo "Failed to render SVG icon with qlmanage and no fallback PNG exists: $SOURCE_PNG" >&2
+  exit 1
+fi
 
 function make_icon() {
   local size="$1"
@@ -43,6 +49,12 @@ make_icon 512 icon_256x256@2x.png
 make_icon 512 icon_512x512.png
 cp "$SOURCE_PNG" "$ICONSET_DIR/icon_512x512@2x.png"
 
-iconutil -c icns "$ICONSET_DIR" -o "$TARGET_ICNS"
+if ! iconutil -c icns "$ICONSET_DIR" -o "$TARGET_ICNS"; then
+  if [[ -f "$TARGET_ICNS" ]]; then
+    echo "Reusing existing macOS icon after iconutil failure: $TARGET_ICNS"
+    exit 0
+  fi
+  exit 1
+fi
 
 echo "Generated macOS icon: $TARGET_ICNS"
