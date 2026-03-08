@@ -522,7 +522,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   onContextChange?: (context: WorkspacePanelContext) => void;
   onRunCommandInTerminal?: (command: string, timeoutMs?: number) => Promise<unknown>;
 }>(function WorkspacePanel(props, ref) {
-  const { settings } = props;
+  const { onContextChange, settings } = props;
   const panelRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const editorOverlayRef = useRef<HTMLPreElement | null>(null);
@@ -661,7 +661,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   }, [activePath]);
 
   useEffect(() => {
-    props.onContextChange?.({
+    onContextChange?.({
       workspaceRoot,
       activePath,
       activeText,
@@ -680,7 +680,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
         hasTestMethods: activeJavaInfo?.hasTestMethods ?? false
       }
     });
-  }, [activeJavaInfo, activePath, activeText, agentPatches.length, agentStatus, dirty, javaProjectInfo, props, rootEntries, workspaceRoot]);
+  }, [activeJavaInfo, activePath, activeText, agentPatches.length, agentStatus, dirty, javaProjectInfo, onContextChange, rootEntries, workspaceRoot]);
 
   useEffect(() => {
     return () => {
