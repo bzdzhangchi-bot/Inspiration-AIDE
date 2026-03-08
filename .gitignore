@@ -6,3 +6,4 @@ release/
 electron-dev.log
 *.log
 *.local
+CLAUDE.md
