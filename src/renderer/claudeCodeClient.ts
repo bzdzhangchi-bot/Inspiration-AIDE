@@ -39,6 +39,9 @@ const CLAUDE_SESSION_TITLE = 'Claude Code';
 const MAX_EVENTS = 24;
 const MAX_RAW_TAIL = 6000;
 const MAX_DEBUG_TAIL = 6000;
+const DEBUG_POLL_INTERVAL_ACTIVE_MS = 1800;
+const DEBUG_POLL_INTERVAL_IDLE_MS = 5000;
+const DEBUG_DELTA_FALLBACK_CHARS = 1600;
 const PLAN_BULLET_PATTERN = /^(?:[-*]|\d+\.)\s+/;
 const PLAN_START_PATTERN = /\b(plan|implementation plan|proposed plan|approach options|execution plans?)\b/i;
 const APPROVAL_PATTERN = /\b(approve|approval|permission|allow|proceed|continue\?)\b/i;
@@ -164,7 +167,10 @@ class ClaudeCodeClient {
   private lineBuffer = '';
   private collectingPlan = false;
   private debugPollTimer: number | null = null;
+  private debugPollInFlight = false;
   private lastDebugContents = '';
+  private lastDebugSize = 0;
+  private lastDebugMtimeMs = 0;
   private restoredWorkspaceRoot: string | null = null;
 
   private emit() {
@@ -193,6 +199,38 @@ class ClaudeCodeClient {
     this.lineBuffer = '';
     this.collectingPlan = false;
     this.lastDebugContents = '';
+    this.lastDebugSize = 0;
+    this.lastDebugMtimeMs = 0;
+  }
+
+  private cloneStateSnapshot(): ClaudeCodeRuntimeState {
+    return {
+      ...this.state,
+      lastPlan: [...this.state.lastPlan],
+      events: [...this.state.events],
+      resumeInfo: { ...this.state.resumeInfo },
+      capabilities: { ...this.state.capabilities }
+    };
+  }
+
+  private stopDebugPolling() {
+    if (this.debugPollTimer !== null) {
+      window.clearTimeout(this.debugPollTimer);
+      this.debugPollTimer = null;
+    }
+  }
+
+  private maybeTearDownSubscriptions() {
+    if (this.listeners.size > 0) return;
+    this.stopDebugPolling();
+    this.offTerminal?.();
+    this.offTerminal = null;
+  }
+
+  private getDebugPollIntervalMs() {
+    if (this.state.running) return DEBUG_POLL_INTERVAL_ACTIVE_MS;
+    if (this.state.connected) return 3200;
+    return DEBUG_POLL_INTERVAL_IDLE_MS;
   }
 
   private ensureSubscribed() {
@@ -205,11 +243,11 @@ class ClaudeCodeClient {
         if (this.state.workspaceRoot !== previousWorkspaceRoot) {
           this.clearWorkspaceScopedState();
           this.restorePersistedState(this.state.workspaceRoot);
-          this.ensureDebugPolling();
         }
         if (this.state.sessionId === null) {
           this.state.running = false;
         }
+        this.ensureDebugPolling();
         this.emit();
         return;
       }
@@ -232,6 +270,7 @@ class ClaudeCodeClient {
       this.state.connected = false;
       this.state.running = false;
       pushEvent(this.state, 'lifecycle', `Claude Code session exited (${event.signal ?? event.exitCode ?? 'unknown'})`);
+      this.ensureDebugPolling();
       this.emit();
     });
 
@@ -292,6 +331,8 @@ class ClaudeCodeClient {
       this.state.rawTail = typeof stored.rawTail === 'string' ? stored.rawTail.slice(-MAX_RAW_TAIL) : '';
       this.state.debugLogTail = typeof stored.debugLogTail === 'string' ? stored.debugLogTail.slice(-MAX_DEBUG_TAIL) : '';
       this.lastDebugContents = this.state.debugLogTail;
+      this.lastDebugSize = this.lastDebugContents.length;
+      this.lastDebugMtimeMs = 0;
       this.state.events = Array.isArray(stored.events)
         ? stored.events.filter((event): event is ClaudeCodeRuntimeEvent => (
           Boolean(event)
@@ -314,31 +355,52 @@ class ClaudeCodeClient {
   }
 
   private ensureDebugPolling() {
+    if (this.listeners.size === 0 || !this.state.debugLogPath) {
+      this.stopDebugPolling();
+      return;
+    }
     if (this.debugPollTimer !== null) return;
-    this.debugPollTimer = window.setInterval(() => {
+
+    this.debugPollTimer = window.setTimeout(() => {
+      this.debugPollTimer = null;
       void this.pollDebugLog();
-    }, 1500);
+    }, this.getDebugPollIntervalMs());
   }
 
   private async pollDebugLog() {
     const debugLogPath = this.state.debugLogPath;
-    if (!debugLogPath) return;
+    if (!debugLogPath || this.debugPollInFlight) {
+      this.ensureDebugPolling();
+      return;
+    }
+
+    this.debugPollInFlight = true;
 
     try {
-      const contents = await fsClient.readWorkspaceTextFile(debugLogPath);
-      if (contents === this.lastDebugContents) return;
+      const snapshot = await fsClient.readWorkspaceTextFileTail(debugLogPath, MAX_DEBUG_TAIL);
+      if (snapshot.size === this.lastDebugSize && snapshot.mtimeMs === this.lastDebugMtimeMs && snapshot.contents === this.lastDebugContents) {
+        return;
+      }
 
       const previous = this.lastDebugContents;
+      const contents = snapshot.contents;
       this.lastDebugContents = contents;
-      this.state.debugLogTail = contents.slice(-MAX_DEBUG_TAIL);
+      this.lastDebugSize = snapshot.size;
+      this.lastDebugMtimeMs = snapshot.mtimeMs;
+      this.state.debugLogTail = contents;
 
       const delta = contents.startsWith(previous)
         ? contents.slice(previous.length)
-        : contents.slice(Math.max(0, contents.length - 1600));
-      this.processDebugChunk(delta);
-      this.emit();
+        : contents.slice(Math.max(0, contents.length - DEBUG_DELTA_FALLBACK_CHARS));
+      if (delta) {
+        this.processDebugChunk(delta);
+        this.emit();
+      }
     } catch {
       // Debug file may not exist before Claude creates it.
+    } finally {
+      this.debugPollInFlight = false;
+      this.ensureDebugPolling();
     }
   }
 
@@ -513,15 +575,11 @@ class ClaudeCodeClient {
   subscribe(listener: (state: ClaudeCodeRuntimeState) => void) {
     this.ensureSubscribed();
     this.listeners.add(listener);
-    listener({
-      ...this.state,
-      lastPlan: [...this.state.lastPlan],
-      events: [...this.state.events],
-      resumeInfo: { ...this.state.resumeInfo },
-      capabilities: { ...this.state.capabilities }
-    });
+    this.ensureDebugPolling();
+    listener(this.cloneStateSnapshot());
     return () => {
       this.listeners.delete(listener);
+      this.maybeTearDownSubscriptions();
     };
   }
 }

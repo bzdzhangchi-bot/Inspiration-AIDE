@@ -1022,11 +1022,16 @@ export function ChatPage(props: {
   }, []);
 
   useEffect(() => {
+    if (settings.interactionMode !== 'claude_cli') {
+      setClaudeRuntimeState(INITIAL_CLAUDE_RUNTIME_STATE);
+      return;
+    }
+
     const off = claudeCodeClient.subscribe(setClaudeRuntimeState);
     return () => {
       off();
     };
-  }, []);
+  }, [settings.interactionMode]);
 
   useEffect(() => {
     if (settings.interactionMode !== 'claude_cli') {

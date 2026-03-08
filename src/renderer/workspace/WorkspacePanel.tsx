@@ -1,12 +1,4 @@
-import { type ComponentPropsWithoutRef, type DragEvent as ReactDragEvent, forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import hljs from 'highlight.js';
-import GithubSlugger from 'github-slugger';
-import { marked } from 'marked';
-import mermaid from 'mermaid';
-import ReactMarkdown from 'react-markdown';
-import rehypeSlug from 'rehype-slug';
-import remarkBreaks from 'remark-breaks';
-import remarkGfm from 'remark-gfm';
+import { Suspense, lazy, type DragEvent as ReactDragEvent, forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { fsClient } from '../fsClient';
 import { CORE_SERVER_URL, openAgentPatchStream, openInlineCompletionStream } from '../wsClient';
 import type { ProviderId } from '../../shared/types';
@@ -49,8 +41,7 @@ type WelcomeShortcutItem = {
   run: () => void | Promise<void>;
 };
 
-let mermaidInitialized = false;
-let mermaidRenderChain: Promise<void> = Promise.resolve();
+const MarkdownPreviewContent = lazy(() => import('./MarkdownPreviewContent'));
 
 const FILE_TYPE_LABELS: Record<string, string> = {
   ts: 'TS',
@@ -107,6 +98,15 @@ function getWorkspaceRootName(rootPath: string) {
 
 function isPathInsideRoot(rootPath: string, filePath: string) {
   return filePath === rootPath || filePath.startsWith(`${rootPath}/`) || filePath.startsWith(`${rootPath}\\`);
+}
+
+function isPathRelated(leftPath: string | null | undefined, rightPath: string | null | undefined) {
+  if (!leftPath || !rightPath) return false;
+  return leftPath === rightPath
+    || leftPath.startsWith(`${rightPath}/`)
+    || leftPath.startsWith(`${rightPath}\\`)
+    || rightPath.startsWith(`${leftPath}/`)
+    || rightPath.startsWith(`${leftPath}\\`);
 }
 
 function reorderRoots(rootPaths: string[], sourceRoot: string, targetRoot: string, placement: 'before' | 'after') {
@@ -382,183 +382,27 @@ function decodeBase64ToBytes(value: string) {
 
 function extractMarkdownHeadings(markdown: string) {
   const headings: MarkdownHeading[] = [];
-  const slugger = new GithubSlugger();
-  const tokens = marked.lexer(markdown, { breaks: true, gfm: true }) as Array<{ type?: string; text?: string; depth?: number }>;
+  const slugCounts = new Map<string, number>();
+  const headingPattern = /^(#{1,6})\s+(.*)$/gm;
 
-  for (const token of tokens) {
-    if (token.type !== 'heading') continue;
-    const text = token.text?.trim() ?? '';
+  for (const match of markdown.matchAll(headingPattern)) {
+    const level = match[1]?.length ?? 1;
+    const text = match[2]?.trim().replace(/\s+#*$/, '') ?? '';
     if (!text) continue;
-    const id = slugger.slug(text || slugifyHeading(text));
+
+    const baseId = slugifyHeading(text);
+    const repeatCount = slugCounts.get(baseId) ?? 0;
+    slugCounts.set(baseId, repeatCount + 1);
+    const id = repeatCount === 0 ? baseId : `${baseId}-${repeatCount}`;
+
     headings.push({
       id,
       text,
-      level: token.depth ?? 1
+      level
     });
   }
 
   return headings;
-}
-
-function ensureMermaidInitialized() {
-  if (mermaidInitialized) return;
-  mermaid.initialize({
-    startOnLoad: false,
-    securityLevel: 'loose',
-    suppressErrorRendering: true,
-    theme: 'neutral',
-    fontFamily: 'ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-    htmlLabels: true,
-    flowchart: {
-      useMaxWidth: true
-    },
-    sequence: {
-      useMaxWidth: true
-    },
-    gitGraph: {
-      useMaxWidth: true
-    }
-  });
-  mermaidInitialized = true;
-}
-
-type MermaidDiagramProps = {
-  source: string;
-};
-
-function MermaidDiagram({ source }: MermaidDiagramProps) {
-  const [svg, setSvg] = useState('');
-  const [error, setError] = useState('');
-  const canvasRef = useRef<HTMLDivElement | null>(null);
-  const bindFunctionsRef = useRef<((element: Element) => void) | undefined>(undefined);
-
-  useEffect(() => {
-    let cancelled = false;
-    ensureMermaidInitialized();
-    setSvg('');
-    setError('');
-    bindFunctionsRef.current = undefined;
-
-    mermaidRenderChain = mermaidRenderChain
-      .catch(() => undefined)
-      .then(async () => {
-        try {
-          await mermaid.parse(source, { suppressErrors: false });
-          const renderId = `mermaid-preview-${Math.random().toString(36).slice(2, 10)}`;
-          const rendered = await mermaid.render(renderId, source, canvasRef.current ?? undefined);
-          if (cancelled) return;
-          if (!rendered.svg || !rendered.svg.includes('<svg')) {
-            throw new Error('Mermaid returned empty SVG output');
-          }
-          bindFunctionsRef.current = rendered.bindFunctions;
-          setSvg(rendered.svg);
-          setError('');
-        } catch (renderError) {
-          if (cancelled) return;
-          const message = renderError instanceof Error ? renderError.message : 'Failed to render Mermaid diagram';
-          console.error('Mermaid preview render failed', renderError);
-          bindFunctionsRef.current = undefined;
-          setSvg('');
-          setError(message);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [source]);
-
-  useEffect(() => {
-    if (!svg || !canvasRef.current) return;
-    const svgEl = canvasRef.current.querySelector<SVGSVGElement>('svg');
-    if (svgEl) {
-      svgEl.removeAttribute('width');
-      svgEl.removeAttribute('height');
-      svgEl.style.maxWidth = '100%';
-      svgEl.style.height = 'auto';
-      svgEl.style.display = 'block';
-    }
-    bindFunctionsRef.current?.(canvasRef.current);
-  }, [svg]);
-
-  return (
-    <div
-      className={`mermaidDiagram${svg ? ' isRendered' : ''}${error ? ' hasError' : ''}`}
-      data-mermaid-error={error || undefined}
-      title={error || undefined}
-    >
-      <div ref={canvasRef} className="mermaidCanvas" dangerouslySetInnerHTML={svg ? { __html: svg } : undefined} />
-      <pre className="mermaidSource">
-        <code className="language-mermaid">{source}</code>
-      </pre>
-    </div>
-  );
-}
-
-type MarkdownCodeProps = ComponentPropsWithoutRef<'code'> & {
-  inline?: boolean;
-};
-
-function MarkdownCode({ inline, className, children, ...props }: MarkdownCodeProps) {
-  const source = String(children ?? '').replace(/\n$/, '');
-  const language = className?.match(/language-([^\s]+)/)?.[1]?.toLowerCase();
-  const highlighted = useMemo(() => {
-    if (!language) {
-      return hljs.highlightAuto(source);
-    }
-    if (hljs.getLanguage(language)) {
-      return hljs.highlight(source, { language });
-    }
-    return hljs.highlightAuto(source);
-  }, [language, source]);
-
-  if (inline) {
-    return <code className={className} {...props}>{children}</code>;
-  }
-
-  if (language === 'mermaid') {
-    return <MermaidDiagram source={source} />;
-  }
-
-  return (
-    <pre>
-      <code
-        {...props}
-        className={`hljs${highlighted.language ? ` language-${highlighted.language}` : ''}`}
-        dangerouslySetInnerHTML={{ __html: highlighted.value }}
-      />
-    </pre>
-  );
-}
-
-function MarkdownPreviewContent({ markdown }: { markdown: string }) {
-  return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkBreaks]}
-      rehypePlugins={[rehypeSlug]}
-      components={{
-        pre({ children }) {
-          return <>{children}</>;
-        },
-        code: MarkdownCode,
-        a({ href, children, ...props }) {
-          const external = typeof href === 'string' && /^(https?:)?\/\//.test(href);
-          return (
-            <a
-              href={href}
-              target={external ? '_blank' : undefined}
-              rel={external ? 'noreferrer noopener' : undefined}
-              {...props}
-            >
-              {children}
-            </a>
-          );
-        }
-      }}
-    >
-      {markdown}
-    </ReactMarkdown>
-  );
 }
 
 function isJavaFile(filePath: string | null) {
@@ -724,19 +568,37 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   const dirty = activeDoc?.dirty ?? false;
   const activeJavaInfo = useMemo(() => analyzeJavaDocument(activeDoc), [activeDoc]);
   const javaProjectInfo = useMemo(() => detectJavaProject(rootEntries, activeDoc, activeJavaInfo), [activeDoc, activeJavaInfo, rootEntries]);
-  const javaEditorHighlight = useMemo(() => {
-    if (!activeDoc || activeDoc.fileState.kind !== 'text' || activeDoc.viewMode !== 'edit' || !isJavaFile(activeDoc.path)) {
-      return '';
+  const [javaEditorHighlight, setJavaEditorHighlight] = useState('');
+  const shouldHighlightJavaEditor = !!activeDoc && activeDoc.fileState.kind === 'text' && activeDoc.viewMode === 'edit' && isJavaFile(activeDoc.path);
+
+  useEffect(() => {
+    if (!shouldHighlightJavaEditor || !activeDoc) {
+      setJavaEditorHighlight('');
+      return;
     }
 
+    let cancelled = false;
     const source = activeDoc.text.length ? activeDoc.text : ' ';
-    try {
-      const highlighted = hljs.highlight(source, { language: 'java' }).value;
-      return activeDoc.text.endsWith('\n') ? `${highlighted}\n ` : highlighted;
-    } catch {
-      return escapeHtml(source);
-    }
-  }, [activeDoc]);
+    const fallback = activeDoc.text.endsWith('\n') ? `${escapeHtml(source)}\n ` : escapeHtml(source);
+    setJavaEditorHighlight(fallback);
+
+    void import('highlight.js').then((module) => {
+      if (cancelled) return;
+      try {
+        const highlighted = module.default.highlight(source, { language: 'java' }).value;
+        setJavaEditorHighlight(activeDoc.text.endsWith('\n') ? `${highlighted}\n ` : highlighted);
+      } catch {
+        setJavaEditorHighlight(fallback);
+      }
+    }).catch(() => {
+      if (cancelled) return;
+      setJavaEditorHighlight(fallback);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeDoc, shouldHighlightJavaEditor]);
 
   useEffect(() => {
     workspaceRootRef.current = workspaceRoot;
@@ -959,11 +821,19 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     });
   }, []);
 
-  const refreshExplorerIncremental = useCallback(async (root: string) => {
-    const nextRootEntries = sortEntries(await fsClient.listWorkspaceDir(root));
-    setRootEntriesByRoot((prev) => ({ ...prev, [root]: nextRootEntries }));
+  const refreshExplorerIncremental = useCallback(async (root: string, changedPath?: string | null) => {
+    const normalizedChangedPath = changedPath && isPathInsideRoot(root, changedPath) ? changedPath : null;
+    const relativePath = normalizedChangedPath
+      ? normalizedChangedPath.slice(root.length).replace(/^[/\\]/, '')
+      : '';
+    const shouldRefreshRootEntries = !normalizedChangedPath || !relativePath || !relativePath.includes('/') && !relativePath.includes('\\');
 
-    const expanded = expandedDirsRef.current;
+    if (shouldRefreshRootEntries) {
+      const nextRootEntries = sortEntries(await fsClient.listWorkspaceDir(root));
+      setRootEntriesByRoot((prev) => ({ ...prev, [root]: nextRootEntries }));
+    }
+
+    const expanded = expandedDirsRef.current.filter((dirPath) => !normalizedChangedPath || isPathRelated(dirPath, normalizedChangedPath));
     if (!expanded.length) return;
 
     const loadedChildren = await Promise.all(expanded.map(async (dirPath) => {
@@ -1056,9 +926,9 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     await revealFileInExplorer(activePath);
   }, [activePath, revealFileInExplorer]);
 
-  const refreshOpenDocsFromDisk = useCallback(async () => {
+  const refreshOpenDocsFromDisk = useCallback(async (changedPath?: string | null) => {
     const docs = openDocsRef.current;
-    const cleanDocs = docs.filter((doc) => !doc.dirty);
+    const cleanDocs = docs.filter((doc) => !doc.dirty && (!changedPath || isPathRelated(doc.path, changedPath)));
     if (!cleanDocs.length) return;
 
     const refreshed = await Promise.all(cleanDocs.map(async (doc) => {
@@ -1098,7 +968,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     }));
   }, []);
 
-  const scheduleWorkspaceRefresh = useCallback((root: string, reason?: string) => {
+  const scheduleWorkspaceRefresh = useCallback((root: string, changedPath?: string | null, reason?: string) => {
     if (reason) {
       setStatus(reason);
     }
@@ -1108,8 +978,8 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     refreshTimerRef.current = window.setTimeout(() => {
       refreshTimerRef.current = null;
       if (!root) return;
-      void refreshExplorerIncremental(root)
-        .then(() => refreshOpenDocsFromDisk())
+      void refreshExplorerIncremental(root, changedPath)
+        .then(() => refreshOpenDocsFromDisk(changedPath))
         .then(() => {
           setStatus('');
         })
@@ -1462,7 +1332,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
 
       const root = findWorkspaceRootForPath(event.path) ?? workspaceRootRef.current;
       if (!root) return;
-      scheduleWorkspaceRefresh(root, 'Workspace updated…');
+      scheduleWorkspaceRefresh(root, event.path, 'Workspace updated…');
     });
 
     return () => {
@@ -1995,7 +1865,9 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
                       ) : null}
                       <div ref={previewBodyRef} className="markdownPreviewBody">
                         <div className="markdownPreview">
-                          <MarkdownPreviewContent markdown={activeDoc.text} />
+                          <Suspense fallback={<div className="footerHint">Loading preview…</div>}>
+                            <MarkdownPreviewContent markdown={activeDoc.text} />
+                          </Suspense>
                         </div>
                       </div>
                     </div>

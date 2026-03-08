@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('assistantDesk', {
   setWorkspaceRoots: (rootPaths) => ipcRenderer.invoke('workspace:setRoots', { rootPaths }),
   listWorkspaceDir: (dirPath) => ipcRenderer.invoke('fs:listWorkspaceDir', { dirPath }),
   readWorkspaceTextFile: (filePath) => ipcRenderer.invoke('fs:readWorkspaceTextFile', { filePath }),
+  readWorkspaceTextFileTail: (filePath, maxChars) => ipcRenderer.invoke('fs:readWorkspaceTextFileTail', { filePath, maxChars }),
   readWorkspaceFile: (filePath) => ipcRenderer.invoke('fs:readWorkspaceFile', { filePath }),
   writeWorkspaceTextFile: (filePath, contents) => ipcRenderer.invoke('fs:writeWorkspaceTextFile', { filePath, contents }),
   openArbitraryTextFile: () => ipcRenderer.invoke('fs:openArbitraryTextFile'),

@@ -60,6 +60,10 @@ export const fsClient = {
     return window.assistantDesk.readWorkspaceTextFile(filePath);
   },
 
+  async readWorkspaceTextFileTail(filePath: string, maxChars = 6000): Promise<{ contents: string; size: number; mtimeMs: number }> {
+    return window.assistantDesk.readWorkspaceTextFileTail(filePath, maxChars);
+  },
+
   async readWorkspaceFile(filePath: string): Promise<{ kind: 'text' | 'binary'; contents: string | null; contentsEncoding: 'utf8' | 'base64' | null; mimeType: string | null; readOnly: boolean; size: number }> {
     return window.assistantDesk.readWorkspaceFile(filePath);
   },

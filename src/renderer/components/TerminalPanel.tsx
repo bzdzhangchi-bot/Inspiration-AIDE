@@ -1,6 +1,6 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { FitAddon } from '@xterm/addon-fit';
-import { Terminal } from '@xterm/xterm';
+import type { FitAddon } from '@xterm/addon-fit';
+import type { Terminal } from '@xterm/xterm';
 import { terminalClient, type TerminalCommandResult, type TerminalEvent, type TerminalState } from '../terminalClient';
 import type { SettingsState } from '../pages/SettingsPage';
 
@@ -87,53 +87,72 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, {
 
   useEffect(() => {
     const el = containerRef.current;
-    if (!el || terminalRef.current) return;
+    if (!el || terminalRef.current || !isOpen) return;
 
-    const terminal = new Terminal({
-      cursorBlink: true,
-      fontFamily: settings.terminalFontFamily,
-      fontSize: settings.terminalFontSize,
-      lineHeight: 1.35,
-      scrollback: 5000,
-      theme: buildTerminalTheme(el)
-    });
-    const fitAddon = new FitAddon();
-    terminal.loadAddon(fitAddon);
-    terminal.open(el);
+    let cancelled = false;
+    let cleanup: (() => void) | null = null;
 
-    terminalRef.current = terminal;
-    fitAddonRef.current = fitAddon;
+    void Promise.all([
+      import('@xterm/xterm'),
+      import('@xterm/addon-fit')
+    ]).then(([xtermModule, fitAddonModule]) => {
+      if (cancelled || terminalRef.current) return;
 
-    const syncSize = () => {
-      fitAddon.fit();
-      const dimensions = fitAddon.proposeDimensions();
-      if (!dimensions) return;
-      void terminalClient.resize(dimensions.cols, dimensions.rows);
-    };
+      const terminal = new xtermModule.Terminal({
+        cursorBlink: true,
+        fontFamily: settings.terminalFontFamily,
+        fontSize: settings.terminalFontSize,
+        lineHeight: 1.35,
+        scrollback: 5000,
+        theme: buildTerminalTheme(el)
+      });
+      const fitAddon = new fitAddonModule.FitAddon();
+      terminal.loadAddon(fitAddon);
+      terminal.open(el);
 
-    syncSize();
-    const dataDisposable = terminal.onData((data) => {
-      void terminalClient.write(data, undefined, 'terminal');
-    });
+      terminalRef.current = terminal;
+      fitAddonRef.current = fitAddon;
 
-    resizeObserverRef.current = new ResizeObserver(() => {
+      const syncSize = () => {
+        fitAddon.fit();
+        const dimensions = fitAddon.proposeDimensions();
+        if (!dimensions) return;
+        void terminalClient.resize(dimensions.cols, dimensions.rows);
+      };
+
       syncSize();
-    });
-    resizeObserverRef.current.observe(el);
+      renderSessionBuffer(activeSessionIdRef.current);
 
-    if (bridgeAvailable) {
-      terminal.focus();
-    }
+      const dataDisposable = terminal.onData((data) => {
+        void terminalClient.write(data, undefined, 'terminal');
+      });
+
+      resizeObserverRef.current = new ResizeObserver(() => {
+        syncSize();
+      });
+      resizeObserverRef.current.observe(el);
+
+      if (bridgeAvailable) {
+        terminal.focus();
+      }
+
+      cleanup = () => {
+        dataDisposable.dispose();
+        resizeObserverRef.current?.disconnect();
+        resizeObserverRef.current = null;
+        fitAddonRef.current = null;
+        terminalRef.current = null;
+        terminal.dispose();
+      };
+    }).catch(() => {
+      setBridgeAvailable(false);
+    });
 
     return () => {
-      dataDisposable.dispose();
-      resizeObserverRef.current?.disconnect();
-      resizeObserverRef.current = null;
-      fitAddonRef.current = null;
-      terminalRef.current = null;
-      terminal.dispose();
+      cancelled = true;
+      cleanup?.();
     };
-  }, [bridgeAvailable, settings.terminalFontFamily, settings.terminalFontSize]);
+  }, [bridgeAvailable, isOpen, settings.terminalFontFamily, settings.terminalFontSize]);
 
   useEffect(() => {
     const terminal = terminalRef.current;

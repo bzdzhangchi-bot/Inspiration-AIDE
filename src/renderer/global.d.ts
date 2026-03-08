@@ -51,6 +51,7 @@ declare global {
       setWorkspaceRoots(rootPaths: string[]): Promise<{ workspaceRoot: string | null; workspaceRoots: string[] }>;
       listWorkspaceDir(dirPath: string): Promise<Array<{ name: string; path: string; kind: 'file' | 'dir' }>>;
       readWorkspaceTextFile(filePath: string): Promise<string>;
+      readWorkspaceTextFileTail(filePath: string, maxChars?: number): Promise<{ contents: string; size: number; mtimeMs: number }>;
       readWorkspaceFile(filePath: string): Promise<{ kind: 'text' | 'binary'; contents: string | null; contentsEncoding: 'utf8' | 'base64' | null; mimeType: string | null; readOnly: boolean; size: number }>;
       writeWorkspaceTextFile(filePath: string, contents: string): Promise<void>;
       openArbitraryTextFile(): Promise<{ path: string; contents: string } | null>;

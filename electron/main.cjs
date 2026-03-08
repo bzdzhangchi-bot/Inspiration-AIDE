@@ -10,10 +10,28 @@ const pty = require('node-pty');
 // (avoids native module ABI issues inside Electron)
 let coreProc;
 
+const WORKSPACE_WATCH_DEBOUNCE_MS = 240;
+const WORKSPACE_WATCH_IGNORED_NAMES = new Set([
+  '.git',
+  'node_modules',
+  'dist',
+  'dist-electron',
+  'release',
+  '.next',
+  '.turbo',
+  '.vite',
+  'coverage'
+]);
+const WORKSPACE_WATCH_IGNORED_BASENAMES = new Set([
+  '.ds_store'
+]);
+
 const state = {
   workspaceRoot: null,
   workspaceRoots: [],
   workspaceWatchers: new Map(),
+  workspaceWatchDebounceTimers: new Map(),
+  pendingWorkspaceChanges: new Map(),
   terminal: {
     sessions: new Map(),
     activeSessionId: null,
@@ -33,6 +51,12 @@ function closeWorkspaceWatchers() {
     }
   }
   state.workspaceWatchers.clear();
+
+  for (const timer of state.workspaceWatchDebounceTimers.values()) {
+    clearTimeout(timer);
+  }
+  state.workspaceWatchDebounceTimers.clear();
+  state.pendingWorkspaceChanges.clear();
 }
 
 function emitWorkspaceEvent(payload) {
@@ -52,19 +76,70 @@ function normalizeWorkspaceRoots(nextRoots) {
   return normalized;
 }
 
+function shouldIgnoreWorkspaceWatchPath(rootPath, targetPath) {
+  if (!targetPath || targetPath === rootPath) return false;
+  const relativePath = path.relative(rootPath, targetPath);
+  if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+    return false;
+  }
+
+  const parts = relativePath.split(path.sep).filter(Boolean);
+  if (!parts.length) return false;
+
+  return parts.some((part) => {
+    const lower = part.toLowerCase();
+    return WORKSPACE_WATCH_IGNORED_NAMES.has(lower) || WORKSPACE_WATCH_IGNORED_BASENAMES.has(lower);
+  });
+}
+
+function flushWorkspaceWatchEvents(rootPath) {
+  const timer = state.workspaceWatchDebounceTimers.get(rootPath);
+  if (timer) {
+    clearTimeout(timer);
+    state.workspaceWatchDebounceTimers.delete(rootPath);
+  }
+
+  const pendingPaths = state.pendingWorkspaceChanges.get(rootPath);
+  state.pendingWorkspaceChanges.delete(rootPath);
+  if (!pendingPaths || pendingPaths.size === 0) return;
+
+  const paths = [...pendingPaths];
+  const nextPath = paths.length === 1 ? paths[0] : rootPath;
+  emitWorkspaceEvent({
+    type: 'changed',
+    eventType: 'change',
+    path: nextPath
+  });
+}
+
+function scheduleWorkspaceWatchEvent(rootPath, changedPath) {
+  const normalizedPath = typeof changedPath === 'string' && changedPath ? path.resolve(rootPath, changedPath) : rootPath;
+  if (shouldIgnoreWorkspaceWatchPath(rootPath, normalizedPath)) {
+    return;
+  }
+
+  const pendingPaths = state.pendingWorkspaceChanges.get(rootPath) ?? new Set();
+  pendingPaths.add(normalizedPath);
+  state.pendingWorkspaceChanges.set(rootPath, pendingPaths);
+
+  if (state.workspaceWatchDebounceTimers.has(rootPath)) {
+    return;
+  }
+
+  const timer = setTimeout(() => {
+    flushWorkspaceWatchEvents(rootPath);
+  }, WORKSPACE_WATCH_DEBOUNCE_MS);
+  state.workspaceWatchDebounceTimers.set(rootPath, timer);
+}
+
 function watchWorkspaceRoots(rootPaths) {
   closeWorkspaceWatchers();
   for (const rootPath of rootPaths) {
     if (!rootPath) continue;
     try {
       const watcher = fs.watch(rootPath, { recursive: true }, (eventType, changedPath) => {
-        emitWorkspaceEvent({
-          type: 'changed',
-          eventType: typeof eventType === 'string' ? eventType : 'change',
-          path: typeof changedPath === 'string' && changedPath
-            ? path.resolve(rootPath, changedPath)
-            : rootPath
-        });
+        void eventType;
+        scheduleWorkspaceWatchEvent(rootPath, changedPath);
       });
 
       watcher.on('error', (error) => {
@@ -979,6 +1054,20 @@ function registerIpc() {
     const st = await fsp.stat(resolved);
     if (!st.isFile()) throw new Error('Not a file');
     return fsp.readFile(resolved, 'utf8');
+  });
+
+  ipcMain.handle('fs:readWorkspaceTextFileTail', async (_ev, { filePath, maxChars }) => {
+    const resolved = resolveWithinWorkspace(filePath);
+    const st = await fsp.stat(resolved);
+    if (!st.isFile()) throw new Error('Not a file');
+
+    const charLimit = Math.max(512, Number.isFinite(maxChars) ? Math.floor(maxChars) : 6000);
+    const buffer = await fsp.readFile(resolved, 'utf8');
+    return {
+      contents: buffer.slice(-charLimit),
+      size: st.size,
+      mtimeMs: st.mtimeMs
+    };
   });
 
   ipcMain.handle('fs:readWorkspaceFile', async (_ev, { filePath }) => {
