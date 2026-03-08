@@ -48,8 +48,7 @@ jobs:
 
       - name: Build release artifacts
         env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npm run ${{ matrix.script }}
 
       - name: Upload artifacts
