@@ -1,0 +1,48 @@
+import type { ReactNode } from 'react';
+
+export type PageId = 'project' | 'settings';
+
+export function Sidebar(props: {
+  activePage: PageId;
+  onNavigate: (page: PageId) => void;
+  footer?: ReactNode;
+}) {
+  const { activePage, onNavigate, footer } = props;
+
+  return (
+    <div className="sidebar">
+      <div className="sidebarHeader">
+        <button type="button" className="sidebarBrand" title="assistant-desk" aria-label="assistant-desk">
+          AD
+        </button>
+      </div>
+
+      <div className="nav">
+        <button
+          className={activePage === 'project' ? 'navItem navIcon active' : 'navItem navIcon'}
+          onClick={() => onNavigate('project')}
+          title="Project"
+          aria-label="Project"
+        >
+          <svg className="navGlyph" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3.5 6.5h7v4h-7z" />
+            <path d="M13.5 6.5h7v4h-7z" />
+            <path d="M3.5 13.5h17v4h-17z" />
+          </svg>
+        </button>
+        <button
+          className={activePage === 'settings' ? 'navItem navIcon active' : 'navItem navIcon'}
+          onClick={() => onNavigate('settings')}
+          title="Settings"
+          aria-label="Settings"
+        >
+          <svg className="navGlyph" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 8.4a3.6 3.6 0 1 0 0 7.2 3.6 3.6 0 0 0 0-7.2zm0-4.4 1 .2.5 2a6.9 6.9 0 0 1 1.6.9l1.9-.8.8.8-.8 1.9c.4.5.7 1 .9 1.6l2 .5.2 1-.2 1-2 .5a6.9 6.9 0 0 1-.9 1.6l.8 1.9-.8.8-1.9-.8a6.9 6.9 0 0 1-1.6.9l-.5 2-1 .2-1-.2-.5-2a6.9 6.9 0 0 1-1.6-.9l-1.9.8-.8-.8.8-1.9a6.9 6.9 0 0 1-.9-1.6l-2-.5-.2-1 .2-1 2-.5c.2-.6.5-1.1.9-1.6l-.8-1.9.8-.8 1.9.8a6.9 6.9 0 0 1 1.6-.9l.5-2 1-.2z" />
+          </svg>
+        </button>
+      </div>
+
+      <div className="sidebarFooter">{footer}</div>
+    </div>
+  );
+}

@@ -1,0 +1,35 @@
+const { contextBridge, ipcRenderer } = require('electron');
+
+contextBridge.exposeInMainWorld('assistantDesk', {
+  selectWorkspaceFolder: () => ipcRenderer.invoke('workspace:selectFolder'),
+  getWorkspaceRoot: () => ipcRenderer.invoke('workspace:getRoot'),
+  getWorkspaceRoots: () => ipcRenderer.invoke('workspace:getRoots'),
+  setActiveWorkspaceRoot: (rootPath) => ipcRenderer.invoke('workspace:setActiveRoot', { rootPath }),
+  removeWorkspaceRoot: (rootPath) => ipcRenderer.invoke('workspace:removeRoot', { rootPath }),
+  setWorkspaceRoots: (rootPaths) => ipcRenderer.invoke('workspace:setRoots', { rootPaths }),
+  listWorkspaceDir: (dirPath) => ipcRenderer.invoke('fs:listWorkspaceDir', { dirPath }),
+  readWorkspaceTextFile: (filePath) => ipcRenderer.invoke('fs:readWorkspaceTextFile', { filePath }),
+  readWorkspaceFile: (filePath) => ipcRenderer.invoke('fs:readWorkspaceFile', { filePath }),
+  writeWorkspaceTextFile: (filePath, contents) => ipcRenderer.invoke('fs:writeWorkspaceTextFile', { filePath, contents }),
+  openArbitraryTextFile: () => ipcRenderer.invoke('fs:openArbitraryTextFile'),
+  getTerminalState: () => ipcRenderer.invoke('terminal:getState'),
+  createTerminalSession: (cwd, title) => ipcRenderer.invoke('terminal:createSession', { cwd, title }),
+  setActiveTerminalSession: (sessionId) => ipcRenderer.invoke('terminal:setActiveSession', { sessionId }),
+  closeTerminalSession: (sessionId) => ipcRenderer.invoke('terminal:closeSession', { sessionId }),
+  writeTerminalInput: (data, sessionId, source) => ipcRenderer.invoke('terminal:write', { data, sessionId, source }),
+  execWorkspaceCommand: (command, timeoutMs) => ipcRenderer.invoke('terminal:execWorkspaceCommand', { command, timeoutMs }),
+  runTerminalCommandWithCapture: (command, timeoutMs, sessionId) => ipcRenderer.invoke('terminal:runCommandWithCapture', { command, timeoutMs, sessionId }),
+  resizeTerminal: (cols, rows) => ipcRenderer.invoke('terminal:resize', { cols, rows }),
+  restartTerminal: (sessionId) => ipcRenderer.invoke('terminal:restart', { sessionId }),
+  interruptTerminal: (sessionId) => ipcRenderer.invoke('terminal:interrupt', { sessionId }),
+  onTerminalEvent: (listener) => {
+    const wrapped = (_event, payload) => listener(payload);
+    ipcRenderer.on('terminal:event', wrapped);
+    return () => ipcRenderer.removeListener('terminal:event', wrapped);
+  },
+  onWorkspaceEvent: (listener) => {
+    const wrapped = (_event, payload) => listener(payload);
+    ipcRenderer.on('workspace:event', wrapped);
+    return () => ipcRenderer.removeListener('workspace:event', wrapped);
+  }
+});
