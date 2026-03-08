@@ -27,6 +27,53 @@ export type ClaudeMemorySnapshot = {
   notices: string[];
 };
 
+export type GitStatusEntry = {
+  path: string;
+  originalPath: string | null;
+  staged: string;
+  unstaged: string;
+  kind: 'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'typechange' | 'untracked' | 'unmerged' | 'unknown';
+};
+
+export type GitCommitSummary = {
+  sha: string;
+  shortSha: string;
+  author: string;
+  subject: string;
+  relativeTime: string;
+};
+
+export type GitRepositorySnapshot = {
+  workspaceRoot: string;
+  gitRoot: string | null;
+  branch: string | null;
+  upstream: string | null;
+  headShortSha: string | null;
+  ahead: number;
+  behind: number;
+  isClean: boolean;
+  changedFiles: number;
+  stagedFiles: number;
+  unstagedFiles: number;
+  untrackedFiles: number;
+  statusEntries: GitStatusEntry[];
+  recentCommits: GitCommitSummary[];
+  error: string | null;
+};
+
+export type GitDiffSnapshot = {
+  workspaceRoot: string;
+  gitRoot: string | null;
+  path: string;
+  staged: boolean;
+  diff: string;
+};
+
+export type GitCommitResult = {
+  repository: GitRepositorySnapshot;
+  output: string;
+};
+
 export const fsClient = {
   async selectWorkspaceFolder(): Promise<string | null> {
     return window.assistantDesk.selectWorkspaceFolder();
@@ -38,6 +85,34 @@ export const fsClient = {
 
   async getWorkspaceRoots(): Promise<string[]> {
     return window.assistantDesk.getWorkspaceRoots();
+  },
+
+  async getGitRepositories(): Promise<GitRepositorySnapshot[]> {
+    return window.assistantDesk.getGitRepositories();
+  },
+
+  async getGitRepository(workspaceRoot: string): Promise<GitRepositorySnapshot> {
+    return window.assistantDesk.getGitRepository(workspaceRoot);
+  },
+
+  async getGitDiff(workspaceRoot: string, filePath: string, staged = false): Promise<GitDiffSnapshot> {
+    return window.assistantDesk.getGitDiff(workspaceRoot, filePath, staged);
+  },
+
+  async stageGitFile(workspaceRoot: string, filePath: string): Promise<GitRepositorySnapshot> {
+    return window.assistantDesk.stageGitFile(workspaceRoot, filePath);
+  },
+
+  async unstageGitFile(workspaceRoot: string, filePath: string): Promise<GitRepositorySnapshot> {
+    return window.assistantDesk.unstageGitFile(workspaceRoot, filePath);
+  },
+
+  async discardGitFile(workspaceRoot: string, filePath: string): Promise<GitRepositorySnapshot> {
+    return window.assistantDesk.discardGitFile(workspaceRoot, filePath);
+  },
+
+  async commitGitChanges(workspaceRoot: string, message: string): Promise<GitCommitResult> {
+    return window.assistantDesk.commitGitChanges(workspaceRoot, message);
   },
 
   async setActiveWorkspaceRoot(rootPath: string): Promise<string | null> {

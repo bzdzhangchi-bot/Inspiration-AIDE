@@ -396,6 +396,320 @@
   overflow: auto;
 }
 
+.gitWorkbenchPage {
+  min-height: 100%;
+}
+
+.gitWorkbenchHeaderActions,
+.gitPaneHeaderMeta,
+.gitCommitStats,
+.gitCommitActions,
+.gitInlineActions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.gitWorkbenchLayout {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(220px, 260px) minmax(320px, 1.1fr) minmax(420px, 1.3fr) minmax(280px, 340px);
+  gap: 14px;
+}
+
+.gitSidebarPane,
+.gitChangesPane,
+.gitDiffPane,
+.gitCommitPane {
+  min-height: 0;
+  display: grid;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.gitSidebarPane,
+.gitCommitPane {
+  align-content: start;
+}
+
+.gitPaneHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.gitPaneHeader.split {
+  flex-wrap: wrap;
+}
+
+.gitPaneHint,
+.gitCommitMeta,
+.gitStatusMeta,
+.gitRepoListMeta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.gitRepoList,
+.gitChangeList,
+.gitCommitHistory {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  gap: 8px;
+  padding-right: 4px;
+}
+
+.gitRepoListItem,
+.gitChangeItem,
+.gitCommitHistoryItem,
+.gitEmptyState {
+  border: 1px solid color-mix(in srgb, var(--border) 82%, var(--text) 6%);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 84%, var(--text) 2%);
+}
+
+.gitRepoListItem {
+  width: 100%;
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+  text-align: left;
+  padding: 12px;
+}
+
+.gitRepoListItem:hover,
+.gitChangeItem:hover {
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--border));
+}
+
+.gitRepoListItem.active,
+.gitChangeItem.active {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+}
+
+.gitRepoListTitle,
+.gitStatusPath,
+.gitCommitSubject {
+  word-break: break-word;
+}
+
+.gitRepoListTitle {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.gitChangesColumns {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.gitChangeGroup {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 8px;
+}
+
+.gitGroupHeader,
+.gitCommitHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.gitGroupHeader {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.gitChangeItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+}
+
+.gitChangeMain {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  text-align: left;
+  padding: 2px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.gitChangeTextBlock {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.gitStatusCode {
+  min-width: 34px;
+  font-family: var(--font-editor);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.gitStatusPath,
+.gitCommitSubject {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.gitActionButton {
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, var(--text) 8%);
+  background: color-mix(in srgb, var(--panel) 88%, var(--text) 3%);
+  color: var(--text);
+}
+
+.gitActionButton:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--panel) 74%, var(--text) 8%);
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+}
+
+.gitActionButton:disabled {
+  opacity: 0.56;
+  cursor: default;
+}
+
+.gitInlineAction {
+  padding: 6px 10px;
+  border-radius: 9px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, var(--text) 8%);
+  background: color-mix(in srgb, var(--panel-2) 88%, var(--text) 3%);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.gitInlineAction:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+
+.gitInlineAction.danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, #c92a2a 36%, var(--border));
+  color: color-mix(in srgb, #c92a2a 88%, var(--text));
+}
+
+.gitInlineAction:disabled {
+  opacity: 0.56;
+  cursor: default;
+}
+
+.gitDiffMeta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.gitDiffViewer {
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, var(--text) 6%);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg) 88%, var(--panel) 12%);
+  color: var(--text);
+  font-family: var(--font-editor);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.gitCommitInput {
+  width: 100%;
+  min-height: 112px;
+  resize: vertical;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, var(--text) 8%);
+  background: color-mix(in srgb, var(--bg) 88%, var(--panel) 12%);
+  color: var(--text);
+  font: inherit;
+}
+
+.gitCommitOutput {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, #2f9e44 34%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in srgb, #2f9e44 10%, var(--panel));
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.gitEmptyState {
+  padding: 10px 12px;
+}
+
+.gitCommitHeader {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.gitCommitHistoryItem {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+}
+
+.gitEmptyState {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.gitEmptyState.compact {
+  padding: 12px;
+}
+
+@media (max-width: 1320px) {
+  .gitWorkbenchLayout {
+    grid-template-columns: minmax(200px, 240px) minmax(300px, 1fr) minmax(320px, 1fr);
+  }
+
+  .gitCommitPane {
+    grid-column: 2 / 4;
+  }
+}
+
+@media (max-width: 1024px) {
+  .gitWorkbenchLayout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .gitChangesColumns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .gitCommitPane {
+    grid-column: auto;
+  }
+}
+
 .cardTitle {
   margin: 0;
   font-size: 12px;
@@ -755,6 +1069,12 @@
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+@media (max-width: 1100px) {
+  .gitRepoBody {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .terminalTabs {

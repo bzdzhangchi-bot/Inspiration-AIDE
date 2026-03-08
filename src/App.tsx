@@ -5,6 +5,7 @@ import { TerminalPanel, type TerminalPanelHandle } from './renderer/components/T
 import { claudeCodeClient } from './renderer/claudeCodeClient';
 import type { TerminalCommandResult } from './renderer/terminalClient';
 import { ChatPage } from './renderer/pages/ChatPage';
+import { GitPage } from './renderer/pages/GitPage';
 import { SettingsPage, type ModelProfile, type SettingsState } from './renderer/pages/SettingsPage';
 
 const DEFAULT_PROFILE: ModelProfile = {
@@ -120,6 +121,7 @@ function App() {
 
   const activeProfile = settings.profiles.find((profile) => profile.id === settings.activeProfileId) ?? settings.profiles[0] ?? DEFAULT_PROFILE;
   const isProjectPage = activePage === 'project';
+  const activePageLabel = activePage === 'project' ? 'Project' : activePage === 'git' ? 'Git' : 'Settings';
 
   const [isChatDrawerOpen, setIsChatDrawerOpen] = useState(true);
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
@@ -247,6 +249,8 @@ function App() {
                 onSendPromptToClaudeCli={sendPromptToClaudeCliFromChat}
                 onInterruptClaudeCli={interruptClaudeCliFromChat}
               />
+            ) : activePage === 'git' ? (
+              <GitPage onRunCommandInTerminal={runTerminalCommandFromChat} />
             ) : (
               <SettingsPage settings={settings} onChange={setSettings} themeMode={themeMode} onThemeChange={setThemeMode} />
             )}
@@ -304,7 +308,7 @@ function App() {
           </button>
           <div className="statusBarSep" />
           <button className="statusBarItem" type="button">
-            {activePage === 'project' ? 'Project' : 'Settings'}
+            {activePageLabel}
           </button>
         </div>
 

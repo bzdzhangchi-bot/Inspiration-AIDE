@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 
-export type PageId = 'project' | 'settings';
+export type PageId = 'project' | 'git' | 'settings';
 
 export function Sidebar(props: {
   activePage: PageId;
@@ -28,6 +28,17 @@ export function Sidebar(props: {
             <path d="M3.5 6.5h7v4h-7z" />
             <path d="M13.5 6.5h7v4h-7z" />
             <path d="M3.5 13.5h17v4h-17z" />
+          </svg>
+        </button>
+        <button
+          className={activePage === 'git' ? 'navItem navIcon active' : 'navItem navIcon'}
+          onClick={() => onNavigate('git')}
+          title="Git"
+          aria-label="Git"
+        >
+          <svg className="navGlyph" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M7 6.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5Zm0 0v10a3 3 0 0 0 3 3h1.5" />
+            <path d="M17 12.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5Zm0-6a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5Zm-7.5 12h5" />
           </svg>
         </button>
         <button

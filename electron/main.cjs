@@ -693,6 +693,411 @@ async function runWorkspaceCommand(command, timeoutMs = 20000) {
   });
 }
 
+async function runProgramCommand(command, args, cwd, timeoutMs = 15000, maxOutputChars = 24000) {
+  return await new Promise((resolve, reject) => {
+    const proc = spawn(command, args, {
+      cwd,
+      env: {
+        ...process.env,
+        LC_ALL: 'C',
+        LANG: 'C'
+      }
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+
+    const append = (current, chunk) => {
+      const next = current + chunk;
+      if (next.length <= maxOutputChars) return next;
+      return `${next.slice(0, maxOutputChars)}\n...[truncated]`;
+    };
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        proc.kill('SIGTERM');
+      } catch {
+        // ignore
+      }
+      resolve({ stdout, stderr: append(stderr, '\nCommand timed out.'), exitCode: null, signal: 'SIGTERM', cwd });
+    }, Math.max(1000, timeoutMs));
+
+    proc.stdout.on('data', (chunk) => {
+      stdout = append(stdout, String(chunk));
+    });
+
+    proc.stderr.on('data', (chunk) => {
+      stderr = append(stderr, String(chunk));
+    });
+
+    proc.on('error', (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+
+    proc.on('close', (exitCode, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        stdout,
+        stderr,
+        exitCode: typeof exitCode === 'number' ? exitCode : null,
+        signal: signal ? String(signal) : null,
+        cwd
+      });
+    });
+  });
+}
+
+function parseGitBranchHeader(headerLine) {
+  const result = {
+    branch: null,
+    upstream: null,
+    ahead: 0,
+    behind: 0
+  };
+
+  if (!headerLine) return result;
+
+  const normalized = headerLine.startsWith('## ') ? headerLine.slice(3).trim() : headerLine.trim();
+  if (!normalized) return result;
+
+  if (normalized.startsWith('No commits yet on ')) {
+    result.branch = normalized.slice('No commits yet on '.length).trim() || null;
+    return result;
+  }
+
+  if (normalized === 'HEAD (no branch)' || normalized.startsWith('HEAD (')) {
+    result.branch = 'Detached HEAD';
+    return result;
+  }
+
+  const trackingMatch = / \[(.+)\]$/.exec(normalized);
+  const branchSegment = trackingMatch ? normalized.slice(0, trackingMatch.index) : normalized;
+
+  if (branchSegment.includes('...')) {
+    const [branch, upstream] = branchSegment.split('...');
+    result.branch = branch?.trim() || null;
+    result.upstream = upstream?.trim() || null;
+  } else {
+    result.branch = branchSegment.trim() || null;
+  }
+
+  const trackingInfo = trackingMatch?.[1]?.split(',').map((part) => part.trim()) ?? [];
+  for (const part of trackingInfo) {
+    const aheadMatch = /^ahead (\d+)$/.exec(part);
+    if (aheadMatch) {
+      result.ahead = Number(aheadMatch[1]);
+      continue;
+    }
+    const behindMatch = /^behind (\d+)$/.exec(part);
+    if (behindMatch) {
+      result.behind = Number(behindMatch[1]);
+    }
+  }
+
+  return result;
+}
+
+function classifyGitStatus(staged, unstaged) {
+  if (staged === '?' && unstaged === '?') return 'untracked';
+  if (staged === 'U' || unstaged === 'U') return 'unmerged';
+
+  const code = staged !== ' ' && staged !== '?' ? staged : unstaged;
+  if (code === 'A') return 'added';
+  if (code === 'M') return 'modified';
+  if (code === 'D') return 'deleted';
+  if (code === 'R') return 'renamed';
+  if (code === 'C') return 'copied';
+  if (code === 'T') return 'typechange';
+  return 'unknown';
+}
+
+function parseGitStatusOutput(stdout) {
+  const lines = stdout.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').filter(Boolean);
+  const branchInfo = lines[0]?.startsWith('## ') ? parseGitBranchHeader(lines[0]) : parseGitBranchHeader('');
+  const statusEntries = [];
+
+  for (const line of (lines[0]?.startsWith('## ') ? lines.slice(1) : lines)) {
+    if (line.length < 3) continue;
+    const staged = line[0];
+    const unstaged = line[1];
+    const payload = line.slice(3).trim();
+    if (!payload) continue;
+
+    let originalPath = null;
+    let filePath = payload;
+    if (payload.includes(' -> ')) {
+      const [fromPath, toPath] = payload.split(' -> ');
+      originalPath = fromPath?.trim() || null;
+      filePath = toPath?.trim() || payload;
+    }
+
+    statusEntries.push({
+      path: filePath,
+      originalPath,
+      staged,
+      unstaged,
+      kind: classifyGitStatus(staged, unstaged)
+    });
+  }
+
+  return {
+    ...branchInfo,
+    statusEntries
+  };
+}
+
+function parseGitLogOutput(stdout) {
+  return stdout
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const [sha, shortSha, author, subject, relativeTime] = line.split('\t');
+      return {
+        sha: sha || '',
+        shortSha: shortSha || '',
+        author: author || '',
+        subject: subject || '',
+        relativeTime: relativeTime || ''
+      };
+    })
+    .filter((entry) => entry.sha && entry.shortSha);
+}
+
+async function inspectGitRepository(workspaceRoot) {
+  const resolvedWorkspaceRoot = resolveWithinWorkspace(workspaceRoot);
+  const baseSnapshot = {
+    workspaceRoot: resolvedWorkspaceRoot,
+    gitRoot: null,
+    branch: null,
+    upstream: null,
+    headShortSha: null,
+    ahead: 0,
+    behind: 0,
+    isClean: true,
+    changedFiles: 0,
+    stagedFiles: 0,
+    unstagedFiles: 0,
+    untrackedFiles: 0,
+    statusEntries: [],
+    recentCommits: [],
+    error: null
+  };
+
+  let topLevelResult;
+  try {
+    topLevelResult = await runProgramCommand('git', ['rev-parse', '--show-toplevel'], resolvedWorkspaceRoot, 8000, 4000);
+  } catch (error) {
+    if (error && typeof error === 'object' && error.code === 'ENOENT') {
+      return {
+        ...baseSnapshot,
+        error: 'Git is not installed or not available in PATH.'
+      };
+    }
+    return {
+      ...baseSnapshot,
+      error: error instanceof Error ? error.message : 'Unable to inspect Git repository.'
+    };
+  }
+
+  if (topLevelResult.exitCode !== 0) {
+    return baseSnapshot;
+  }
+
+  const gitRoot = normalizeCapturedOutput(topLevelResult.stdout) || resolvedWorkspaceRoot;
+
+  const statusResult = await runProgramCommand('git', ['status', '--porcelain=1', '-b'], resolvedWorkspaceRoot, 10000, 64000);
+  if (statusResult.exitCode !== 0) {
+    return {
+      ...baseSnapshot,
+      gitRoot,
+      error: normalizeCapturedOutput(statusResult.stderr) || 'Unable to read Git status.'
+    };
+  }
+
+  const parsedStatus = parseGitStatusOutput(statusResult.stdout);
+  const stagedFiles = parsedStatus.statusEntries.filter((entry) => entry.staged !== ' ' && entry.staged !== '?').length;
+  const unstagedFiles = parsedStatus.statusEntries.filter((entry) => entry.unstaged !== ' ' && entry.unstaged !== '?').length;
+  const untrackedFiles = parsedStatus.statusEntries.filter((entry) => entry.kind === 'untracked').length;
+
+  let headShortSha = null;
+  try {
+    const headResult = await runProgramCommand('git', ['rev-parse', '--short', 'HEAD'], resolvedWorkspaceRoot, 5000, 200);
+    if (headResult.exitCode === 0) {
+      headShortSha = normalizeCapturedOutput(headResult.stdout) || null;
+    }
+  } catch {
+    // ignore missing HEAD for empty repositories
+  }
+
+  let recentCommits = [];
+  try {
+    const logResult = await runProgramCommand('git', ['log', '--max-count=5', '--pretty=format:%H%x09%h%x09%an%x09%s%x09%cr'], resolvedWorkspaceRoot, 10000, 12000);
+    if (logResult.exitCode === 0) {
+      recentCommits = parseGitLogOutput(logResult.stdout);
+    }
+  } catch {
+    // ignore empty repositories
+  }
+
+  return {
+    ...baseSnapshot,
+    gitRoot,
+    branch: parsedStatus.branch,
+    upstream: parsedStatus.upstream,
+    headShortSha,
+    ahead: parsedStatus.ahead,
+    behind: parsedStatus.behind,
+    isClean: parsedStatus.statusEntries.length === 0,
+    changedFiles: parsedStatus.statusEntries.length,
+    stagedFiles,
+    unstagedFiles,
+    untrackedFiles,
+    statusEntries: parsedStatus.statusEntries,
+    recentCommits
+  };
+}
+
+async function collectGitRepositories() {
+  const workspaceRoots = state.workspaceRoots.length ? state.workspaceRoots : (state.workspaceRoot ? [state.workspaceRoot] : []);
+  if (!workspaceRoots.length) return [];
+  return await Promise.all(workspaceRoots.map((rootPath) => inspectGitRepository(rootPath)));
+}
+
+async function ensureGitRepository(workspaceRoot) {
+  const snapshot = await inspectGitRepository(workspaceRoot);
+  if (!snapshot.gitRoot) {
+    throw new Error('Workspace is not inside a Git repository.');
+  }
+  if (snapshot.error) {
+    throw new Error(snapshot.error);
+  }
+  return snapshot;
+}
+
+function resolveGitFilePath(workspaceRoot, filePath) {
+  if (typeof filePath !== 'string' || !filePath.trim()) {
+    throw new Error('Git file path is required');
+  }
+
+  if (path.isAbsolute(filePath)) {
+    return resolveWithinWorkspace(filePath);
+  }
+
+  const resolvedWorkspaceRoot = resolveWithinWorkspace(workspaceRoot);
+  return resolveWithinWorkspace(path.join(resolvedWorkspaceRoot, filePath));
+}
+
+async function runGitCommandForWorkspace(workspaceRoot, args, options = {}) {
+  const resolvedWorkspaceRoot = resolveWithinWorkspace(workspaceRoot);
+  const timeoutMs = options.timeoutMs ?? 15000;
+  const maxOutputChars = options.maxOutputChars ?? 24000;
+  return await runProgramCommand('git', args, resolvedWorkspaceRoot, timeoutMs, maxOutputChars);
+}
+
+async function readGitDiff(workspaceRoot, filePath, staged = false) {
+  const repository = await ensureGitRepository(workspaceRoot);
+  const resolvedWorkspaceRoot = resolveWithinWorkspace(workspaceRoot);
+  const resolvedFilePath = resolveGitFilePath(resolvedWorkspaceRoot, filePath);
+  const relativePath = path.relative(resolvedWorkspaceRoot, resolvedFilePath).replace(/\\/g, '/');
+  const diffArgs = ['diff', '--no-ext-diff', '--', relativePath];
+  if (staged) {
+    diffArgs.splice(1, 0, '--cached');
+  }
+
+  const diffResult = await runGitCommandForWorkspace(resolvedWorkspaceRoot, diffArgs, {
+    timeoutMs: 15000,
+    maxOutputChars: 120000
+  });
+
+  if (diffResult.exitCode !== 0) {
+    throw new Error(normalizeCapturedOutput(diffResult.stderr) || 'Unable to read Git diff.');
+  }
+
+  return {
+    workspaceRoot: resolvedWorkspaceRoot,
+    gitRoot: repository.gitRoot,
+    path: relativePath,
+    staged,
+    diff: diffResult.stdout.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  };
+}
+
+async function stageGitFile(workspaceRoot, filePath) {
+  const resolvedWorkspaceRoot = resolveWithinWorkspace(workspaceRoot);
+  const resolvedFilePath = resolveGitFilePath(resolvedWorkspaceRoot, filePath);
+  const relativePath = path.relative(resolvedWorkspaceRoot, resolvedFilePath).replace(/\\/g, '/');
+  const result = await runGitCommandForWorkspace(resolvedWorkspaceRoot, ['add', '--', relativePath]);
+  if (result.exitCode !== 0) {
+    throw new Error(normalizeCapturedOutput(result.stderr) || 'Unable to stage file.');
+  }
+  emitWorkspaceEvent({ type: 'changed', eventType: 'change', path: resolvedFilePath });
+  return await inspectGitRepository(resolvedWorkspaceRoot);
+}
+
+async function unstageGitFile(workspaceRoot, filePath) {
+  const resolvedWorkspaceRoot = resolveWithinWorkspace(workspaceRoot);
+  const resolvedFilePath = resolveGitFilePath(resolvedWorkspaceRoot, filePath);
+  const relativePath = path.relative(resolvedWorkspaceRoot, resolvedFilePath).replace(/\\/g, '/');
+  const result = await runGitCommandForWorkspace(resolvedWorkspaceRoot, ['reset', 'HEAD', '--', relativePath]);
+  if (result.exitCode !== 0) {
+    throw new Error(normalizeCapturedOutput(result.stderr) || 'Unable to unstage file.');
+  }
+  emitWorkspaceEvent({ type: 'changed', eventType: 'change', path: resolvedFilePath });
+  return await inspectGitRepository(resolvedWorkspaceRoot);
+}
+
+async function discardGitFile(workspaceRoot, filePath) {
+  const resolvedWorkspaceRoot = resolveWithinWorkspace(workspaceRoot);
+  const resolvedFilePath = resolveGitFilePath(resolvedWorkspaceRoot, filePath);
+  const relativePath = path.relative(resolvedWorkspaceRoot, resolvedFilePath).replace(/\\/g, '/');
+  const repository = await ensureGitRepository(resolvedWorkspaceRoot);
+  const matchingEntry = repository.statusEntries.find((entry) => entry.path === relativePath);
+
+  if (matchingEntry?.kind === 'untracked') {
+    await fsp.unlink(resolvedFilePath);
+  } else {
+    const result = await runGitCommandForWorkspace(resolvedWorkspaceRoot, ['checkout', '--', relativePath]);
+    if (result.exitCode !== 0) {
+      throw new Error(normalizeCapturedOutput(result.stderr) || 'Unable to discard changes.');
+    }
+  }
+
+  emitWorkspaceEvent({ type: 'changed', eventType: 'change', path: resolvedFilePath });
+  return await inspectGitRepository(resolvedWorkspaceRoot);
+}
+
+async function commitGitChanges(workspaceRoot, message) {
+  const resolvedWorkspaceRoot = resolveWithinWorkspace(workspaceRoot);
+  if (typeof message !== 'string' || !message.trim()) {
+    throw new Error('Commit message is required.');
+  }
+
+  const result = await runGitCommandForWorkspace(resolvedWorkspaceRoot, ['commit', '-m', message.trim()], {
+    timeoutMs: 30000,
+    maxOutputChars: 40000
+  });
+
+  if (result.exitCode !== 0) {
+    throw new Error(normalizeCapturedOutput(result.stderr || result.stdout) || 'Unable to create commit.');
+  }
+
+  emitWorkspaceEvent({ type: 'changed', eventType: 'change', path: resolvedWorkspaceRoot });
+  return {
+    repository: await inspectGitRepository(resolvedWorkspaceRoot),
+    output: normalizeCapturedOutput(result.stdout)
+  };
+}
+
 async function runTerminalCommandWithCapture(command, timeoutMs = 20000, sessionId) {
   if (typeof command !== 'string' || !command.trim()) {
     throw new Error('Command is required');
@@ -1037,6 +1442,34 @@ function registerIpc() {
 
   ipcMain.handle('terminal:runCommandWithCapture', async (_ev, { command, timeoutMs, sessionId }) => {
     return await runTerminalCommandWithCapture(command, timeoutMs, sessionId);
+  });
+
+  ipcMain.handle('git:getRepositories', async () => {
+    return await collectGitRepositories();
+  });
+
+  ipcMain.handle('git:getRepository', async (_ev, { workspaceRoot }) => {
+    return await inspectGitRepository(workspaceRoot);
+  });
+
+  ipcMain.handle('git:getDiff', async (_ev, { workspaceRoot, filePath, staged }) => {
+    return await readGitDiff(workspaceRoot, filePath, Boolean(staged));
+  });
+
+  ipcMain.handle('git:stageFile', async (_ev, { workspaceRoot, filePath }) => {
+    return await stageGitFile(workspaceRoot, filePath);
+  });
+
+  ipcMain.handle('git:unstageFile', async (_ev, { workspaceRoot, filePath }) => {
+    return await unstageGitFile(workspaceRoot, filePath);
+  });
+
+  ipcMain.handle('git:discardFile', async (_ev, { workspaceRoot, filePath }) => {
+    return await discardGitFile(workspaceRoot, filePath);
+  });
+
+  ipcMain.handle('git:commit', async (_ev, { workspaceRoot, message }) => {
+    return await commitGitChanges(workspaceRoot, message);
   });
 
   ipcMain.handle('fs:listWorkspaceDir', async (_ev, { dirPath }) => {
