@@ -110,11 +110,14 @@ type NativeAgentInspectorSnapshot = {
   toolEvents: NativeAgentToolEvent[];
 };
 
+type AssistantLayoutMode = 'collab' | 'immersive';
+
 const EMPTY_THREAD: Msg[] = [];
 const THREAD_PERSIST_DEBOUNCE_MS = 240;
 const MAX_NATIVE_MEMORY_ITEMS = 10;
 const MAX_NATIVE_MEMORY_PREVIEW_CHARS = 420;
 const MAX_NATIVE_MEMORY_QUERY_TERMS = 18;
+const ASSISTANT_LAYOUT_MODE_STORAGE_KEY = 'assistantLayoutMode';
 
 function looksLikeHtml(value: string) {
   return /<\/?[a-z][\s\S]*>/i.test(value);
@@ -1020,7 +1023,7 @@ export function ChatPage(props: {
   onSendPromptToClaudeCli: (prompt: string) => Promise<void>;
   onInterruptClaudeCli: () => Promise<void>;
 }) {
-  const { settings, profiles, activeProfileId, onOpenGitPage, onSelectProfile, isDrawerOpen, onRunCommandInTerminal, onInterruptAgentRun, onSendPromptToClaudeCli } = props;
+  const { settings, profiles, activeProfileId, onOpenGitPage, onSelectProfile, isDrawerOpen, onToggleDrawer, onRunCommandInTerminal, onInterruptAgentRun, onSendPromptToClaudeCli } = props;
 
   const workspacePanelRef = useRef<WorkspacePanelHandle | null>(null);
   const drawerWidthRef = useRef(420);
@@ -1029,6 +1032,11 @@ export function ChatPage(props: {
   const [threadStore, setThreadStore] = useState<ThreadStore>(() => loadStoredThreadState(profiles));
   const [isStreaming, setIsStreaming] = useState(false);
   const [drawerWidth, setDrawerWidth] = useState(420);
+  const [layoutMode, setLayoutMode] = useState<AssistantLayoutMode>(() => {
+    const raw = localStorage.getItem(ASSISTANT_LAYOUT_MODE_STORAGE_KEY);
+    return raw === 'immersive' ? 'immersive' : 'collab';
+  });
+  const [immersiveWorkspaceOpen, setImmersiveWorkspaceOpen] = useState(false);
   const [workspaceContext, setWorkspaceContext] = useState<WorkspacePanelContext>({
     workspaceRoot: null,
     activePath: null,
@@ -1385,10 +1393,22 @@ export function ChatPage(props: {
     if (nextContent && hasAnswerLikeContent) {
       claudeCliSawVisibleReplyRef.current = true;
       claudeCliBufferedReplyRef.current = nextContent;
+      setCurrentMessages((prev) => {
+        if (prev.length === 0) return prev;
+        const lastIndex = prev.length - 1;
+        const last = prev[lastIndex];
+        if (last.role !== 'assistant') {
+          return [...prev, { role: 'assistant', content: nextContent }];
+        }
+        if (last.content === nextContent) {
+          return prev;
+        }
+        const next = [...prev];
+        next[lastIndex] = { role: 'assistant', content: nextContent };
+        return next;
+      });
     }
 
-    const turnTail = extractClaudeCliTurnTail(claudeRuntimeState.rawTail, claudeCliTurnRawTailSnapshotRef.current);
-    if (!turnTail.trim()) return;
     if (!claudeCliSawVisibleReplyRef.current) return;
 
     clearClaudeCliIdleTimer();
@@ -1532,6 +1552,16 @@ export function ChatPage(props: {
   useEffect(() => {
     drawerWidthRef.current = drawerWidth;
   }, [drawerWidth]);
+
+  useEffect(() => {
+    localStorage.setItem(ASSISTANT_LAYOUT_MODE_STORAGE_KEY, layoutMode);
+  }, [layoutMode]);
+
+  useEffect(() => {
+    if (layoutMode === 'immersive' && !isDrawerOpen) {
+      onToggleDrawer();
+    }
+  }, [isDrawerOpen, layoutMode, onToggleDrawer]);
 
   useEffect(() => {
     function onPointerMove(ev: PointerEvent) {
@@ -2884,23 +2914,45 @@ export function ChatPage(props: {
     openInspectorDrawer(section);
   }
 
+  const workspacePanel = (
+    <WorkspacePanel
+      ref={workspacePanelRef}
+      settings={settings}
+      onContextChange={setWorkspaceContext}
+      onOpenGitPage={onOpenGitPage}
+      onRunCommandInTerminal={onRunCommandInTerminal}
+    />
+  );
+
+  const isImmersiveMode = layoutMode === 'immersive';
+  const assistantVisible = isImmersiveMode || isDrawerOpen;
+
   return (
     <div className="page chatPage">
-      <div className="workspaceWithDrawer">
-        <div className="workspaceMain">
-          <WorkspacePanel ref={workspacePanelRef} settings={settings} onContextChange={setWorkspaceContext} onOpenGitPage={onOpenGitPage} onRunCommandInTerminal={onRunCommandInTerminal} />
-        </div>
+      <div className={isImmersiveMode ? 'workspaceWithDrawer immersiveMode' : 'workspaceWithDrawer collabMode'}>
+        {!isImmersiveMode ? (
+          <div className="workspaceMain">
+            {workspacePanel}
+          </div>
+        ) : null}
 
-        <div className={isDrawerOpen ? 'chatDrawer open' : 'chatDrawer'} style={isDrawerOpen ? { width: `${drawerWidth}px` } : undefined}>
+        <div
+          className={isImmersiveMode ? 'chatImmersiveMain' : assistantVisible ? 'chatDrawer open' : 'chatDrawer'}
+          style={!isImmersiveMode && assistantVisible ? { width: `${drawerWidth}px` } : undefined}
+        >
+          {!isImmersiveMode ? (
+            <div
+              className="chatResizeHandle"
+              onPointerDown={(ev) => {
+                dragStateRef.current = { startX: ev.clientX, startWidth: drawerWidthRef.current };
+                document.body.style.userSelect = 'none';
+                document.body.style.cursor = 'col-resize';
+              }}
+            />
+          ) : null}
           <div
-            className="chatResizeHandle"
-            onPointerDown={(ev) => {
-              dragStateRef.current = { startX: ev.clientX, startWidth: drawerWidthRef.current };
-              document.body.style.userSelect = 'none';
-              document.body.style.cursor = 'col-resize';
-            }}
-          />
-          <div className="chatCard">
+            className={isImmersiveMode ? 'chatCard immersive' : 'chatCard'}
+          >
             <div className="chatHeader">
               <div className="chatHeaderTitleRow">
                 <div className="cardTitle">Assistant</div>
@@ -2910,14 +2962,31 @@ export function ChatPage(props: {
                 </div>
               </div>
               <div className="chatHeaderActions">
-                <select value={activeProfileId} onChange={(e) => handleProfileSelection(e.target.value)} className="chatProfileSelect">
-                  {profiles.map((profile) => (
-                    <option key={profile.id} value={profile.id}>
-                      {profile.name} · {modeLabelFor(profile.interactionMode)} · {providerLabelFor(profile.providerId)}
-                    </option>
-                  ))}
-                </select>
-                <button type="button" onClick={resetCurrentThread} disabled={isStreaming || messages.length === 0}>Reset Session</button>
+                <div className="chatHeaderControls">
+                  <select value={activeProfileId} onChange={(e) => handleProfileSelection(e.target.value)} className="chatProfileSelect">
+                    {profiles.map((profile) => (
+                      <option key={profile.id} value={profile.id}>
+                        {profile.name} · {modeLabelFor(profile.interactionMode)} · {providerLabelFor(profile.providerId)}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="assistantLayoutToggle" role="tablist" aria-label="Assistant layout mode">
+                    <button type="button" className={layoutMode === 'collab' ? 'active' : ''} onClick={() => setLayoutMode('collab')} aria-pressed={layoutMode === 'collab'}>
+                      Collaborate
+                    </button>
+                    <button type="button" className={layoutMode === 'immersive' ? 'active' : ''} onClick={() => setLayoutMode('immersive')} aria-pressed={layoutMode === 'immersive'}>
+                      Immerse
+                    </button>
+                  </div>
+                </div>
+                <div className="chatHeaderActionButtons">
+                  {isImmersiveMode ? (
+                    <button type="button" className={immersiveWorkspaceOpen ? 'secondaryButton is-active' : 'secondaryButton'} onClick={() => setImmersiveWorkspaceOpen((value) => !value)}>
+                      {immersiveWorkspaceOpen ? 'Hide Workspace' : 'Show Workspace'}
+                    </button>
+                  ) : null}
+                  <button type="button" onClick={resetCurrentThread} disabled={isStreaming || messages.length === 0}>Reset Session</button>
+                </div>
               </div>
             </div>
 
@@ -2960,7 +3029,7 @@ export function ChatPage(props: {
                       <div className="meta">
                         <div>{m.role}</div>
                       </div>
-                      <div className="bubble"><ChatBubbleContent content={m.content} renderMarkdown={isNativeAgentMode && m.role === 'assistant'} /></div>
+                      <div className="bubble"><ChatBubbleContent content={m.content} renderMarkdown={m.role === 'assistant'} /></div>
                     </div>
                   ))}
                 </div>
@@ -3767,6 +3836,38 @@ export function ChatPage(props: {
               </button>
             </div>
           </div>
+
+          {isImmersiveMode ? (
+            <>
+              <button
+                type="button"
+                className={immersiveWorkspaceOpen ? 'immersiveWorkspaceBackdrop open' : 'immersiveWorkspaceBackdrop'}
+                aria-label="Close workspace context panel"
+                onClick={() => setImmersiveWorkspaceOpen(false)}
+              />
+              <aside className={immersiveWorkspaceOpen ? 'immersiveWorkspacePanel open' : 'immersiveWorkspacePanel'}>
+                <div className="immersiveWorkspaceShell">
+                  <div className="immersiveWorkspaceHeader">
+                    <div>
+                      <div className="cardTitle">Workspace Context</div>
+                      <div className="claudeMemoryMeta">
+                        {workspaceContext.activePath ?? workspaceContext.workspaceRoot ?? 'No workspace open'}
+                      </div>
+                    </div>
+                    <div className="immersiveWorkspaceActions">
+                      <button type="button" onClick={onOpenGitPage} disabled={!workspaceContext.workspaceRoot}>
+                        Open Git
+                      </button>
+                      <button type="button" onClick={() => setImmersiveWorkspaceOpen(false)}>Close</button>
+                    </div>
+                  </div>
+                  <div className="immersiveWorkspaceBody">
+                    {workspacePanel}
+                  </div>
+                </div>
+              </aside>
+            </>
+          ) : null}
         </div>
       </div>
     </div>

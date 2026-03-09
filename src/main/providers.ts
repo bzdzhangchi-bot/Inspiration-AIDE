@@ -248,13 +248,11 @@ export async function checkProviderConnection(req: ProviderConnectionRequest): P
       }
     });
 
-    if (resp.status === 404) {
-      return await probeAnthropicMessagesEndpoint(req, baseUrl);
+    if (resp.ok) {
+      return { ok: true, message: `Anthropic-compatible endpoint reachable at ${baseUrl}.` };
     }
 
-    return resp.ok
-      ? { ok: true, message: `Anthropic-compatible endpoint reachable at ${baseUrl}.` }
-      : { ok: false, message: describeHttpFailure('Anthropic', resp.status, resp.statusText) };
+    return await probeAnthropicMessagesEndpoint(req, baseUrl, resp);
   } catch (error) {
     return {
       ok: false,
@@ -263,7 +261,11 @@ export async function checkProviderConnection(req: ProviderConnectionRequest): P
   }
 }
 
-async function probeAnthropicMessagesEndpoint(req: ProviderConnectionRequest, baseUrl: string): Promise<ProviderConnectionResult> {
+async function probeAnthropicMessagesEndpoint(
+  req: ProviderConnectionRequest,
+  baseUrl: string,
+  initialResponse?: Response
+): Promise<ProviderConnectionResult> {
   const resp = await fetch(buildApiUrl(baseUrl, 'v1/messages'), {
     method: 'POST',
     headers: {
@@ -283,12 +285,23 @@ async function probeAnthropicMessagesEndpoint(req: ProviderConnectionRequest, ba
     return { ok: true, message: `Anthropic-compatible endpoint reachable at ${baseUrl}.` };
   }
 
+  const detail = await safeReadErrorMessage(resp);
+  if (detail) {
+    return { ok: false, message: detail };
+  }
+
   if (resp.status === 400) {
-    const detail = await safeReadErrorMessage(resp);
     return {
       ok: false,
-      message: detail || 'Anthropic-compatible endpoint reached, but the request was rejected. Check the model name and request format.'
+      message: 'Anthropic-compatible endpoint reached, but the request was rejected. Check the model name and request format.'
     };
+  }
+
+  if (initialResponse) {
+    const initialDetail = await safeReadErrorMessage(initialResponse);
+    if (initialDetail) {
+      return { ok: false, message: initialDetail };
+    }
   }
 
   return {

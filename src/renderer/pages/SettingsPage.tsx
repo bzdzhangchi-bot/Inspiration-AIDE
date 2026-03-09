@@ -57,8 +57,8 @@ function createEmptyProfile(): ModelProfile {
 
 function providerLabelFor(providerId: ProviderId) {
   if (providerId === 'github_copilot') return 'Copilot';
-  if (providerId === 'anthropic') return 'Anthropic';
-  return 'Compatible Gateway';
+  if (providerId === 'anthropic') return 'Anthropic-Compatible';
+  return 'OpenAI-Compatible';
 }
 
 function modeLabelFor(mode: InteractionMode) {
@@ -480,8 +480,8 @@ export function SettingsPage(props: {
               className={profile.providerId === 'anthropic' ? 'providerCard active' : 'providerCard'}
               onClick={() => updateSelectedProfile((current) => ({ ...current, providerId: 'anthropic' }))}
             >
-              <span className="providerCardTitle">Anthropic-Compatible</span>
-              <span className="providerCardMeta">Use the official Claude API or any Anthropic-compatible endpoint such as DashScope.</span>
+              <span className="providerCardTitle">Anthropic-Compatible (Claude Messages API)</span>
+              <span className="providerCardMeta">Use this when the endpoint speaks Anthropic's `/v1/messages` format, such as Anthropic itself or Anthropic-compatible services like DashScope.</span>
             </button>
 
             <button
@@ -489,8 +489,8 @@ export function SettingsPage(props: {
               className={profile.providerId === 'openai_compat' ? 'providerCard active' : 'providerCard'}
               onClick={() => updateSelectedProfile((current) => ({ ...current, providerId: 'openai_compat' }))}
             >
-              <span className="providerCardTitle">Compatible Gateway</span>
-              <span className="providerCardMeta">Use a proxy or compatible endpoint when your Claude traffic is routed through another service.</span>
+              <span className="providerCardTitle">OpenAI-Compatible (Chat Completions / Responses)</span>
+              <span className="providerCardMeta">Use this for OpenAI-style APIs with a custom Base URL and API key, including OpenAI, OpenRouter, local gateways, or other OpenAI-compatible proxies.</span>
             </button>
 
             <button
@@ -513,10 +513,10 @@ export function SettingsPage(props: {
             <div className="settingsSectionTitle">Authentication</div>
             <div className="settingsSectionHint">
               {profile.providerId === 'anthropic'
-                ? 'Provide an Anthropic-compatible endpoint and token. Leave the endpoint empty to use the official Anthropic API.'
+                ? 'Provide an Anthropic-compatible endpoint and token. Choose this when your service expects Anthropic Claude Messages API requests.'
                 : profile.providerId === 'github_copilot'
                   ? 'Provide the local gateway URL. Token is optional if your gateway does not require it.'
-                  : 'Provide the gateway URL and credential for your compatible endpoint.'}
+                  : 'Provide the Base URL and credential for an OpenAI-compatible API. Choose this when your service expects OpenAI-style requests.'}
             </div>
           </div>
 
@@ -561,7 +561,11 @@ export function SettingsPage(props: {
 
           {profile.providerId === 'anthropic' ? (
             <div className="settingsMiniNote">
-              DashScope example: endpoint `https://dashscope.aliyuncs.com/apps/anthropic`, token = your DashScope API key, model = the Anthropic-compatible model name exposed there.
+              Example: DashScope Anthropic gateway. Endpoint = `https://dashscope.aliyuncs.com/apps/anthropic`, token = your DashScope API key, model = the Anthropic-compatible model name exposed there.
+            </div>
+          ) : profile.providerId === 'openai_compat' ? (
+            <div className="settingsMiniNote">
+              Example: OpenAI-compatible endpoint. Base URL = your provider's OpenAI-style API root, token = your provider API key, model = the model id exposed by that service.
             </div>
           ) : null}
         </div>
@@ -578,7 +582,7 @@ export function SettingsPage(props: {
               <input
                 value={profile.model}
                 onChange={(e) => updateSelectedProfile((current) => ({ ...current, model: e.target.value }))}
-                placeholder={profile.providerId === 'anthropic' ? 'claude-sonnet-4-5 / claude-opus-4-1' : 'Compatible Claude-capable model'}
+                placeholder={profile.providerId === 'anthropic' ? 'claude-sonnet-4-5 / claude-opus-4-1' : 'gpt-5 / gpt-4.1 / provider-specific model id'}
               />
             </div>
 
@@ -745,7 +749,7 @@ export function SettingsPage(props: {
 
               <h3>Profiles 现在能做什么</h3>
               <ul>
-                <li>创建、复制、删除多个 profile。</li>
+                <li>创建多个 profile，并在左侧列表里直接复制或删除单个 profile。</li>
                 <li>为每个 profile 单独保存 provider、base URL、token、model、interaction mode 和能力开关。</li>
                 <li>用 <strong>Active in chat</strong> 把某个 profile 设为默认 profile。</li>
                 <li>在聊天页顶部直接切换 profile；每个 profile 都维护自己的聊天线程和历史摘要。</li>
@@ -757,6 +761,7 @@ export function SettingsPage(props: {
                 <li><strong>左侧高亮的 profile</strong>：表示你当前正在编辑哪一个 profile。</li>
                 <li><strong>Active in chat / Default</strong>：表示应用默认会用哪一个 profile 进入聊天。</li>
                 <li>聊天页顶部切换 profile 后，当前聊天使用的 profile 也会随之更新，并保存为新的默认选项。</li>
+                <li>如果你改了默认 profile，但还没保存，页面顶部和右侧编辑区都会显示待保存提示。</li>
               </ul>
 
               <h3>Interaction modes（交互模式）</h3>
@@ -765,6 +770,7 @@ export function SettingsPage(props: {
               <ul>
                 <li>使用本应用内置的流式聊天请求（streaming tokens）。</li>
                 <li>provider / endpoint / token / model 这些字段都会用于实际 API 请求。</li>
+                <li>适合先验证 endpoint、model 和 token 是否可用。</li>
                 <li>适合普通问答、代码解释、轻量修改建议。</li>
               </ul>
 
@@ -774,10 +780,11 @@ export function SettingsPage(props: {
                 <li>
                   需要已打开的 workspace root；如果当前没有 workspace，将会<strong>回退到 Standard</strong> 聊天路径。
                 </li>
-                <li>该模式现在可以使用 Copilot（local gateway）、Anthropic 或 Compatible Gateway，前提是对应 provider 本身可连通。</li>
+                <li>该模式现在可以使用 Copilot（local gateway）、Anthropic-Compatible（Claude Messages API）或 OpenAI-Compatible，前提是对应 provider 本身可连通。</li>
                 <li>
                   注意：这里的 “Native Agent” 指的是<strong>本应用内置的 agent 实现</strong>，不是 Claude Code / Claude CLI 本体。
                 </li>
+                <li>该模式会使用 workspace context、工具调用和更偏执行型的系统提示词，并可在聊天页查看 Inspector / progress 信息。</li>
                 <li>更适合“继续做这个重构”“先看看工程再改”“读文件后给出 patch”这类任务。</li>
               </ul>
 
@@ -792,9 +799,11 @@ export function SettingsPage(props: {
 
               <h3>Provider（服务商/网关）是什么意思？</h3>
               <ul>
-                <li><strong>Anthropic</strong>：使用 Anthropic-compatible endpoint + token（如官方 Claude API 或兼容端点）。</li>
-                <li><strong>Compatible Gateway</strong>：使用代理/网关（通常是 OpenAI-compatible 风格），把流量转发到可用的 Claude 能力模型。</li>
+                <li><strong>Anthropic-Compatible（Claude Messages API）</strong>：使用 Anthropic 风格的接口与 token，例如官方 Claude API 或兼容 Anthropic Messages API 的端点。</li>
+                <li><strong>OpenAI-Compatible</strong>：使用 OpenAI 风格的 Base URL + API key，例如 OpenAI、自建代理、OpenRouter 或其他兼容 OpenAI API 的网关。</li>
                 <li><strong>Copilot</strong>：走本地 gateway，默认地址通常是 `http://127.0.0.1:4141`。现在既可用于 Standard，也可用于 Native Agent。</li>
+                <li>如果一个服务给的是 Anthropic `/v1/messages` 风格地址，例如 `https://dashscope.aliyuncs.com/apps/anthropic`，应选择 <strong>Anthropic-Compatible</strong>。</li>
+                <li>如果一个服务给的是 OpenAI 风格 Base URL + Bearer key，应选择 <strong>OpenAI-Compatible</strong>。</li>
               </ul>
 
               <h3>Capabilities（能力开关）</h3>
@@ -802,6 +811,13 @@ export function SettingsPage(props: {
                 <li><strong>Inline completions</strong>：允许该 profile 被编辑器补全请求使用。</li>
                 <li><strong>Agent patches</strong>：允许该 profile 生成工作区 patch 提案。</li>
                 <li>这两个开关是按 profile 单独保存的，不同 profile 可以有不同策略。</li>
+              </ul>
+
+              <h3>连接检查会做什么？</h3>
+              <ul>
+                <li>保存前不强制联网，但聊天页会根据当前 profile 自动做 provider 连通性检查。</li>
+                <li>Anthropic-Compatible 会优先验证 Anthropic 风格接口；OpenAI-Compatible 会验证 OpenAI 风格接口。</li>
+                <li>如果服务端返回了更具体的错误信息，应用会尽量直接显示原始错误，而不是只显示泛化状态码文案。</li>
               </ul>
 
               <h3>常见问题（FAQ）</h3>
@@ -818,6 +834,9 @@ export function SettingsPage(props: {
                 <li>
                   <strong>切换聊天页顶部 profile 会不会丢历史？</strong> 不会。每个 profile 都有自己的线程和摘要，切换后会显示该 profile 对应的聊天内容。
                 </li>
+                <li>
+                  <strong>为什么模型明明存在，却提示 not found / not supported？</strong> 常见原因是 provider 协议选错了。例如 Anthropic-Compatible 和 OpenAI-Compatible 对同一个服务可能对应不同的模型集合和请求格式。
+                </li>
               </ul>
 
               <hr />
@@ -830,7 +849,7 @@ export function SettingsPage(props: {
 
               <h3>What Profiles Can Do</h3>
               <ul>
-                <li>Create, duplicate, and remove multiple profiles.</li>
+                <li>Create multiple profiles, and duplicate or remove each profile directly from the left list.</li>
                 <li>Store provider, base URL, token, model, interaction mode, and capability flags per profile.</li>
                 <li>Mark one profile as the default with <strong>Active in chat</strong>.</li>
                 <li>Switch profiles directly from the chat header; each profile keeps its own thread and history summary.</li>
@@ -842,6 +861,7 @@ export function SettingsPage(props: {
                 <li><strong>The highlighted item in the left list</strong> is the profile you are currently editing.</li>
                 <li><strong>Active in chat / Default</strong> is the profile the app will use by default in chat.</li>
                 <li>Switching the profile from the chat header updates the current chat profile and persists that choice.</li>
+                <li>If you change the default profile but have not saved yet, the page header and editor panel will show a pending-change notice.</li>
               </ul>
 
               <h3>Interaction modes</h3>
@@ -850,6 +870,7 @@ export function SettingsPage(props: {
               <ul>
                 <li>Uses this app&apos;s built-in streaming chat runtime.</li>
                 <li>Provider / endpoint / token / model are taken from this form and used for API requests.</li>
+                <li>Best for quickly validating whether an endpoint, model, and credential are usable.</li>
                 <li>Best for normal Q&amp;A, code explanation, and lightweight assistance.</li>
               </ul>
 
@@ -859,10 +880,11 @@ export function SettingsPage(props: {
                 <li>
                   Requires an opened workspace root. If no workspace is available, the app <strong>falls back to Standard</strong> chat behavior.
                 </li>
-                <li>This mode now works with Copilot (local gateway), Anthropic, or a compatible gateway, as long as the provider connection is valid.</li>
+                <li>This mode now works with Copilot (local gateway), Anthropic-Compatible (Claude Messages API), or OpenAI-Compatible providers, as long as the connection is valid.</li>
                 <li>
                   Note: this "Native Agent" is implemented in this app. It is <strong>not</strong> the Claude Code / Claude CLI runtime.
                 </li>
+                <li>This mode uses workspace context, tool calls, and a more execution-oriented system prompt, and you can inspect progress / runtime context from chat.</li>
                 <li>Best for tasks like exploring a repo, reading files first, and then producing patches or stepwise changes.</li>
               </ul>
 
@@ -877,9 +899,11 @@ export function SettingsPage(props: {
 
               <h3>What does Provider mean?</h3>
               <ul>
-                <li><strong>Anthropic</strong>: use an Anthropic-compatible endpoint + token.</li>
-                <li><strong>Compatible Gateway</strong>: use a proxy / OpenAI-compatible gateway that can route to Claude-capable models.</li>
+                <li><strong>Anthropic-Compatible (Claude Messages API)</strong>: use an Anthropic-style endpoint + token, such as the official Claude API or another Anthropic-compatible service.</li>
+                <li><strong>OpenAI-Compatible</strong>: use an OpenAI-style Base URL + API key, such as OpenAI, OpenRouter, or another OpenAI-compatible gateway/proxy.</li>
                 <li><strong>Copilot</strong>: uses a local gateway, typically `http://127.0.0.1:4141`. It can now be used for both Standard chat and Native Agent mode.</li>
+                <li>If a service gives you an Anthropic `/v1/messages` style endpoint such as `https://dashscope.aliyuncs.com/apps/anthropic`, choose <strong>Anthropic-Compatible</strong>.</li>
+                <li>If a service gives you an OpenAI-style Base URL plus a Bearer key, choose <strong>OpenAI-Compatible</strong>.</li>
               </ul>
 
               <h3>Capabilities</h3>
@@ -887,6 +911,13 @@ export function SettingsPage(props: {
                 <li><strong>Inline completions</strong>: allows this profile to serve editor completion requests.</li>
                 <li><strong>Agent patches</strong>: allows this profile to generate workspace patch proposals.</li>
                 <li>These switches are stored per profile, so different profiles can have different execution policies.</li>
+              </ul>
+
+              <h3>What Does The Connection Check Do?</h3>
+              <ul>
+                <li>Saving does not require a live network check, but the chat page will automatically probe the current provider configuration.</li>
+                <li>Anthropic-Compatible checks Anthropic-style endpoints; OpenAI-Compatible checks OpenAI-style endpoints.</li>
+                <li>When the provider returns a concrete error message, the app tries to surface that original message instead of only showing a generic HTTP status.</li>
               </ul>
 
               <h3>Common questions</h3>
@@ -904,6 +935,9 @@ export function SettingsPage(props: {
                 </li>
                 <li>
                   <strong>Will I lose history when switching profiles in chat?</strong> No. Each profile keeps its own thread and summary, and chat switches between those stored threads.
+                </li>
+                <li>
+                  <strong>Why does a model say not found / not supported even though it exists?</strong> A common cause is a provider mismatch. The same service can expose different model sets and request formats through Anthropic-Compatible vs OpenAI-Compatible endpoints.
                 </li>
               </ul>
             </div>

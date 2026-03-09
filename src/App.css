@@ -1432,8 +1432,17 @@
   position: relative;
 }
 
+.workspaceWithDrawer.immersiveMode {
+  display: block;
+}
+
 .workspaceMain {
   width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.chatImmersiveMain {
   height: 100%;
   min-height: 0;
 }
@@ -1529,6 +1538,49 @@
   justify-content: stretch;
 }
 
+.chatHeaderControls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  gap: 10px;
+  min-width: 0;
+}
+
+.chatHeaderActionButtons {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.assistantLayoutToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 3px;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, var(--text) 8%);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 86%, var(--text) 3%);
+}
+
+.assistantLayoutToggle button {
+  border: 0;
+  border-radius: 999px;
+  padding: 7px 12px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.assistantLayoutToggle button.active {
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel-2));
+  color: var(--text);
+}
+
 .chatHeaderNotice {
   font-size: 11px;
   line-height: 1.4;
@@ -1592,7 +1644,7 @@
 }
 
 .chatProfileSelect {
-  min-width: 0;
+  min-width: 220px;
   width: 100%;
   max-width: none;
 }
@@ -1701,6 +1753,75 @@
 .assistantSideBarItem:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.immersiveWorkspaceBackdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: color-mix(in srgb, #000 24%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 18;
+  transition: opacity 140ms ease;
+}
+
+.immersiveWorkspaceBackdrop.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.immersiveWorkspacePanel {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  bottom: 12px;
+  width: min(520px, calc(100% - 24px));
+  transform: translateX(calc(100% + 18px));
+  opacity: 0;
+  pointer-events: none;
+  z-index: 19;
+  transition: transform 180ms ease, opacity 180ms ease;
+}
+
+.immersiveWorkspacePanel.open {
+  transform: translateX(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.immersiveWorkspaceShell {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  border: 1px solid color-mix(in srgb, var(--border) 86%, var(--text) 4%);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--panel-2) 94%, var(--bg) 6%);
+  box-shadow: var(--shadow-1);
+  overflow: hidden;
+}
+
+.immersiveWorkspaceHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 84%, var(--text) 5%);
+  background: color-mix(in srgb, var(--panel) 82%, var(--text) 3%);
+}
+
+.immersiveWorkspaceActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.immersiveWorkspaceBody {
+  min-height: 0;
 }
 
 .claudeSkillsPanel {
@@ -2711,10 +2832,10 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 10px;
-  border-radius: 12px;
-  border: 1px solid color-mix(in srgb, var(--border) 75%, var(--text) 8%);
-  background: color-mix(in srgb, var(--panel-2) 85%, var(--text) 4%);
+  width: 100%;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
 }
 
 .msg + .msg {
@@ -2724,12 +2845,17 @@
 .meta {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  width: 100%;
   font-size: 10px;
   opacity: 0.7;
 }
 
 .bubble {
+  max-width: min(78%, 820px);
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--border) 76%, var(--text) 8%);
+  background: color-mix(in srgb, var(--panel-2) 85%, var(--text) 4%);
   font-size: 1em;
   line-height: 1.55;
   overflow-wrap: anywhere;
@@ -2809,31 +2935,51 @@
 }
 
 .user {
+  align-items: flex-end;
+}
+
+.assistant {
+  align-items: flex-start;
+}
+
+.user .meta {
+  justify-content: flex-end;
+}
+
+.assistant .meta {
+  justify-content: flex-start;
+}
+
+.user .bubble {
   background: color-mix(in srgb, var(--accent) 22%, var(--panel-2));
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
 }
 
-.assistant {
+.assistant .bubble {
   background: color-mix(in srgb, var(--panel-2) 85%, var(--text) 4%);
 }
 
 .composer {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
   gap: 10px;
-  align-items: flex-end;
+  align-items: stretch;
   min-width: 0;
   flex: 0 0 auto;
 }
 
 .composer textarea {
-  flex: 1;
-  min-height: 44px;
+  min-height: 52px;
   max-height: 160px;
   overflow: auto;
+  height: 100%;
 }
 
 .sendBtn {
   width: 120px;
+  min-height: 52px;
+  height: 100%;
+  align-self: stretch;
 }
 
 .workspaceCard {
@@ -4403,6 +4549,19 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .chatHeaderControls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .chatHeaderActionButtons {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .assistantLayoutToggle {
+    width: fit-content;
+  }
+
   .chatProfileSelect {
     min-width: 0;
     max-width: none;
@@ -4482,6 +4641,22 @@
     width: 40px;
     min-width: 40px;
     height: 40px;
+  }
+
+  .immersiveWorkspacePanel {
+    inset: 0;
+    width: 100%;
+    border-radius: 0;
+    transform: translateX(100%);
+  }
+
+  .immersiveWorkspaceShell {
+    border-radius: 0;
+  }
+
+  .immersiveWorkspaceHeader {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .terminalPanel {
