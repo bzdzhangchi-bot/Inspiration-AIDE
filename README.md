@@ -18,7 +18,7 @@ Built with **Electron + Vite + React + TypeScript**.
 
 ## Latest release
 
-Current stable release: **v0.1.6**
+Current stable release: **v0.1.7**
 
 - Renamed the user-facing app to `Inspiration` and refreshed the shipped icon with a new minimal visual mark.
 - Added an in-app updater flow under `Settings > App` so users can check the latest release and download the correct installer without going back to GitHub manually.

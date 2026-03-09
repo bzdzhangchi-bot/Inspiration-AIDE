@@ -42,6 +42,16 @@ type WelcomeShortcutItem = {
   run: () => void | Promise<void>;
 };
 
+type ExplorerActionTarget = DirEntry | { name: string; path: string; kind: 'root' };
+type ExplorerInputState = {
+  mode: 'create-file' | 'create-dir' | 'copy';
+  targetDir: string;
+  sourceEntry: DirEntry | null;
+  title: string;
+  confirmLabel: string;
+  value: string;
+};
+
 const MarkdownPreviewContent = lazy(() => import('./MarkdownPreviewContent'));
 
 const FILE_TYPE_LABELS: Record<string, string> = {
@@ -91,6 +101,24 @@ type ExplorerFileIcon = {
 
 function getFileName(filePath: string) {
   return filePath.split(/[\\/]/).pop() ?? filePath;
+}
+
+function getParentPath(targetPath: string) {
+  const normalized = targetPath.replace(/[\\/]+$/, '');
+  const separatorIndex = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
+  return separatorIndex > 0 ? normalized.slice(0, separatorIndex) : normalized;
+}
+
+function joinWorkspacePath(basePath: string, nextSegment: string) {
+  return `${basePath.replace(/[\\/]$/, '')}/${nextSegment.replace(/^[/\\]+/, '')}`;
+}
+
+function buildCopyName(name: string, kind: DirEntry['kind']) {
+  if (kind === 'dir') return `${name} copy`;
+  const match = /^(.*?)(\.[^.]*)?$/.exec(name);
+  const stem = match?.[1] || name;
+  const extension = match?.[2] || '';
+  return `${stem} copy${extension}`;
 }
 
 function getWorkspaceRootName(rootPath: string) {
@@ -484,7 +512,10 @@ function detectJavaProject(rootEntries: DirEntry[], activeDoc: OpenDoc | null, a
 
 export type WorkspacePanelContext = {
   workspaceRoot: string | null;
+  workspaceScopePath: string | null;
   activePath: string | null;
+  selectedPath: string | null;
+  selectedEntryKind: 'file' | 'dir' | null;
   activeText: string;
   activeFileName: string | null;
   topLevelEntries: Array<{ path: string; name: string; kind: 'file' | 'dir' }>;
@@ -562,9 +593,15 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   const [loadingDirs, setLoadingDirs] = useState<string[]>([]);
   const [openDocs, setOpenDocs] = useState<OpenDoc[]>([]);
   const [activePath, setActivePath] = useState<string | null>(null);
+  const [selectedExplorerEntry, setSelectedExplorerEntry] = useState<DirEntry | null>(null);
+  const [copiedExplorerEntry, setCopiedExplorerEntry] = useState<DirEntry | null>(null);
+  const [explorerToast, setExplorerToast] = useState<string>('');
+  const [explorerInputState, setExplorerInputState] = useState<ExplorerInputState | null>(null);
+  const [explorerContextMenu, setExplorerContextMenu] = useState<null | { x: number; y: number; target: ExplorerActionTarget; mode: 'create' | 'full' }>(null);
   const [activeWorkspaceBranch, setActiveWorkspaceBranch] = useState<string | null>(null);
   const [status, setStatus] = useState<string>('');
   const [rootMenuOpenFor, setRootMenuOpenFor] = useState<string | null>(null);
+  const [entryMenuOpenFor, setEntryMenuOpenFor] = useState<string | null>(null);
   const [draggedRoot, setDraggedRoot] = useState<string | null>(null);
   const [dragOverRoot, setDragOverRoot] = useState<{ root: string; placement: 'before' | 'after' } | null>(null);
   const [explorerWidth, setExplorerWidth] = useState(() => {
@@ -575,6 +612,8 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   const [activePdfUrl, setActivePdfUrl] = useState<string | null>(null);
   const [flashFilePath, setFlashFilePath] = useState<string | null>(null);
   const flashTimerRef = useRef<number | null>(null);
+  const explorerToastTimerRef = useRef<number | null>(null);
+  const explorerInputRef = useRef<HTMLInputElement | null>(null);
   const isMacLike = useMemo(() => /Mac|iPhone|iPad|iPod/i.test(navigator.platform), []);
 
   const rootEntries = useMemo(() => (workspaceRoot ? rootEntriesByRoot[workspaceRoot] ?? [] : []), [rootEntriesByRoot, workspaceRoot]);
@@ -688,7 +727,10 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   useEffect(() => {
     onContextChange?.({
       workspaceRoot,
+      workspaceScopePath: selectedExplorerEntry?.kind === 'dir' ? selectedExplorerEntry.path : workspaceRoot,
       activePath,
+      selectedPath: selectedExplorerEntry?.path ?? activePath,
+      selectedEntryKind: selectedExplorerEntry?.kind ?? (activePath ? 'file' : null),
       activeText,
       activeFileName: activePath ? getFileName(activePath) : null,
       topLevelEntries: rootEntries,
@@ -705,13 +747,17 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
         hasTestMethods: activeJavaInfo?.hasTestMethods ?? false
       }
     });
-  }, [activeJavaInfo, activePath, activeText, agentPatches.length, agentStatus, dirty, javaProjectInfo, onContextChange, rootEntries, workspaceRoot]);
+  }, [activeJavaInfo, activePath, activeText, agentPatches.length, agentStatus, dirty, javaProjectInfo, onContextChange, rootEntries, selectedExplorerEntry, workspaceRoot]);
 
   useEffect(() => {
     return () => {
       if (flashTimerRef.current !== null) {
         window.clearTimeout(flashTimerRef.current);
         flashTimerRef.current = null;
+      }
+      if (explorerToastTimerRef.current !== null) {
+        window.clearTimeout(explorerToastTimerRef.current);
+        explorerToastTimerRef.current = null;
       }
       inlineStreamRef.current?.close();
       agentStreamRef.current?.close();
@@ -739,13 +785,26 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   useEffect(() => {
     function handlePointerDown(event: PointerEvent) {
       const target = event.target;
-      if (!(target instanceof HTMLElement) || target.closest('.workspaceRootMenuAnchor')) return;
+      if (
+        !(target instanceof HTMLElement)
+        || target.closest('.workspaceRootMenuAnchor')
+        || target.closest('.explorerEntryMenuAnchor')
+        || target.closest('.explorerContextMenu')
+        || target.closest('.explorerInputDialog')
+      ) {
+        return;
+      }
       setRootMenuOpenFor(null);
+      setEntryMenuOpenFor(null);
+      setExplorerContextMenu(null);
     }
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === 'Escape') {
         setRootMenuOpenFor(null);
+        setEntryMenuOpenFor(null);
+        setExplorerContextMenu(null);
+        setExplorerInputState(null);
       }
     }
 
@@ -756,6 +815,14 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, []);
+
+  useEffect(() => {
+    if (!explorerInputState) return;
+    requestAnimationFrame(() => {
+      explorerInputRef.current?.focus();
+      explorerInputRef.current?.select();
+    });
+  }, [explorerInputState]);
 
   useEffect(() => {
     function onPointerMove(ev: PointerEvent) {
@@ -1034,6 +1101,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   const activateWorkspaceRoot = useCallback(async (root: string) => {
     setWorkspaceRoot(root);
     setRootMenuOpenFor(null);
+    setSelectedExplorerEntry(null);
     try {
       await fsClient.setActiveWorkspaceRoot(root);
     } catch (error) {
@@ -1060,6 +1128,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
       setLoadingDirs((prev) => prev.filter((dirPath) => !isPathInsideRoot(root, dirPath)));
       setTreeEntries((prev) => Object.fromEntries(Object.entries(prev).filter(([dirPath]) => !isPathInsideRoot(root, dirPath))));
       setOpenDocs(nextDocs);
+      setSelectedExplorerEntry((prev) => prev && isPathInsideRoot(root, prev.path) ? null : prev);
       setActivePath((prev) => (prev && isPathInsideRoot(root, prev) ? nextDocs.at(-1)?.path ?? null : prev));
       setStatus('');
     } catch (error) {
@@ -1081,6 +1150,41 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   const toggleWorkspaceRootSection = useCallback((root: string) => {
     setRootMenuOpenFor(null);
     setCollapsedWorkspaceRoots((prev) => prev.includes(root) ? prev.filter((item) => item !== root) : [...prev, root]);
+  }, []);
+
+  const closeExplorerMenus = useCallback(() => {
+    setRootMenuOpenFor(null);
+    setEntryMenuOpenFor(null);
+    setExplorerContextMenu(null);
+  }, []);
+
+  const showExplorerToast = useCallback((message: string) => {
+    setExplorerToast(message);
+    if (explorerToastTimerRef.current !== null) {
+      window.clearTimeout(explorerToastTimerRef.current);
+    }
+    explorerToastTimerRef.current = window.setTimeout(() => {
+      setExplorerToast('');
+      explorerToastTimerRef.current = null;
+    }, 1800);
+  }, []);
+
+  const getExplorerPasteTarget = useCallback(() => {
+    if (selectedExplorerEntry?.kind === 'dir') return selectedExplorerEntry.path;
+    if (selectedExplorerEntry?.kind === 'file') return getParentPath(selectedExplorerEntry.path);
+    return workspaceRoot;
+  }, [selectedExplorerEntry, workspaceRoot]);
+
+  const beginCreateEntry = useCallback((dirPath: string, kind: 'file' | 'dir') => {
+    setExplorerContextMenu(null);
+    setExplorerInputState({
+      mode: kind === 'file' ? 'create-file' : 'create-dir',
+      targetDir: dirPath,
+      sourceEntry: null,
+      title: kind === 'file' ? 'Create file' : 'Create folder',
+      confirmLabel: kind === 'file' ? 'Create File' : 'Create Folder',
+      value: kind === 'file' ? 'untitled.txt' : 'new-folder'
+    });
   }, []);
 
   const onWorkspaceRootDragStart = useCallback((event: ReactDragEvent<HTMLButtonElement>, root: string) => {
@@ -1233,7 +1337,142 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
 
   async function onOpenEntry(entry: DirEntry) {
     if (entry.kind !== 'file') return;
+    setSelectedExplorerEntry(entry);
     await openWorkspaceFile(entry.path);
+  }
+
+  function removeDocsForPath(targetPath: string) {
+    const currentDocs = openDocsRef.current;
+    const nextDocs = currentDocs.filter((doc) => !isPathRelated(doc.path, targetPath));
+    setOpenDocs(nextDocs);
+    setActivePath((prev) => (prev && isPathRelated(prev, targetPath) ? nextDocs.at(-1)?.path ?? null : prev));
+    setSelectedExplorerEntry((prev) => (prev && isPathRelated(prev.path, targetPath) ? null : prev));
+  }
+
+  async function createEntryInDirectory(dirPath: string, kind: 'file' | 'dir') {
+    beginCreateEntry(dirPath, kind);
+  }
+
+  async function submitExplorerInput() {
+    const request = explorerInputState;
+    if (!request) return;
+    const requestedName = request?.value.trim();
+    if (!requestedName) return;
+    const nextPath = joinWorkspacePath(request.targetDir, requestedName);
+    const root = findWorkspaceRootForPath(nextPath);
+    if (!root) return;
+
+    try {
+      if (request.mode === 'create-file') {
+        await fsClient.createWorkspaceFile(nextPath, '');
+      } else if (request.mode === 'create-dir') {
+        await fsClient.createWorkspaceDir(nextPath);
+      } else {
+        if (!request.sourceEntry) return;
+        await fsClient.copyWorkspaceEntry(request.sourceEntry.path, nextPath);
+      }
+      await refreshExplorerIncremental(root, nextPath);
+      await ensureFileVisible(nextPath);
+      setCollapsedWorkspaceRoots((prev) => prev.filter((item) => item !== root));
+      setExplorerInputState(null);
+      setStatus(
+        request.mode === 'create-file'
+          ? 'File created'
+          : request.mode === 'create-dir'
+            ? 'Folder created'
+            : request.sourceEntry?.kind === 'dir'
+              ? 'Folder copied'
+              : 'File copied'
+      );
+      closeExplorerMenus();
+
+      if (request.mode === 'create-file' || (request.mode === 'copy' && request.sourceEntry?.kind === 'file')) {
+        await openWorkspaceFile(nextPath, { reveal: true });
+      } else {
+        setSelectedExplorerEntry({ name: requestedName, path: nextPath, kind: 'dir' });
+        setExpandedDirs((prev) => Array.from(new Set([...prev, request.targetDir, nextPath])));
+        await loadDirChildren(request.targetDir);
+        await loadDirChildren(nextPath);
+      }
+    } catch (error) {
+      setStatus(
+        error instanceof Error
+          ? error.message
+          : request.mode === 'copy'
+            ? 'Failed to copy item'
+            : request.mode === 'create-dir'
+              ? 'Failed to create folder'
+              : 'Failed to create file'
+      );
+    }
+  }
+
+  async function copyEntry(entry: DirEntry) {
+    setCopiedExplorerEntry(entry);
+    showExplorerToast(`${entry.kind === 'dir' ? 'Folder' : 'File'} copied to clipboard`);
+  }
+
+  async function pasteEntry(targetDirOverride?: string | null) {
+    if (!copiedExplorerEntry) return;
+    const targetDir = targetDirOverride ?? getExplorerPasteTarget();
+    if (!targetDir) return;
+
+    if (copiedExplorerEntry.kind === 'dir' && isPathInsideRoot(copiedExplorerEntry.path, targetDir)) {
+      setStatus('Cannot paste a folder into itself');
+      showExplorerToast('Cannot paste a folder into itself');
+      return;
+    }
+
+    const destinationPath = joinWorkspacePath(targetDir, buildCopyName(copiedExplorerEntry.name, copiedExplorerEntry.kind));
+    const root = findWorkspaceRootForPath(destinationPath);
+    if (!root) return;
+
+    try {
+      await fsClient.copyWorkspaceEntry(copiedExplorerEntry.path, destinationPath);
+      await refreshExplorerIncremental(root, destinationPath);
+      await ensureFileVisible(destinationPath);
+      setCollapsedWorkspaceRoots((prev) => prev.filter((item) => item !== root));
+      setStatus(copiedExplorerEntry.kind === 'dir' ? 'Folder pasted' : 'File pasted');
+
+      if (copiedExplorerEntry.kind === 'file') {
+        await openWorkspaceFile(destinationPath, { reveal: true });
+      } else {
+        setSelectedExplorerEntry({
+          name: getFileName(destinationPath),
+          path: destinationPath,
+          kind: 'dir'
+        });
+        setExpandedDirs((prev) => Array.from(new Set([...prev, targetDir, destinationPath])));
+      }
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : `Failed to paste ${copiedExplorerEntry.kind}`);
+    }
+  }
+
+  async function deleteEntry(entry: DirEntry) {
+    const relatedDocs = openDocsRef.current.filter((doc) => isPathRelated(doc.path, entry.path));
+    const hasDirtyDocs = relatedDocs.some((doc) => doc.dirty);
+    const prompt = hasDirtyDocs
+      ? `Delete ${entry.name}? Unsaved editor changes will be lost.`
+      : `Delete ${entry.name}?`;
+    if (!window.confirm(prompt)) return;
+
+    const root = findWorkspaceRootForPath(entry.path);
+    if (!root) return;
+
+    try {
+      await fsClient.deleteWorkspaceEntry(entry.path);
+      removeDocsForPath(entry.path);
+      await refreshExplorerIncremental(root, getParentPath(entry.path));
+      setStatus(entry.kind === 'dir' ? 'Folder deleted' : 'File deleted');
+      closeExplorerMenus();
+      setTreeEntries((prev) => Object.fromEntries(
+        Object.entries(prev).filter(([dirPath]) => !isPathRelated(dirPath, entry.path))
+      ));
+      setExpandedDirs((prev) => prev.filter((dirPath) => !isPathRelated(dirPath, entry.path)));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : `Failed to delete ${entry.kind}`);
+    }
   }
 
   async function onSave() {
@@ -1284,18 +1523,35 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   const welcomeShortcutItems = useMemo<WelcomeShortcutItem[]>(() => {
     return [
       {
-        id: 'open-project',
-        title: 'Open Project',
-        description: 'Add or switch a workspace folder in the Explorer.',
-        keys: ['Mod', 'O'],
-        run: () => void onPickWorkspace()
+        id: 'copy-entry',
+        title: 'Copy Selected',
+        description: selectedExplorerEntry ? 'Copy the selected file or folder in Explorer.' : 'Select a file or folder in Explorer, then copy it.',
+        keys: ['Mod', 'C'],
+        disabled: !selectedExplorerEntry,
+        run: () => {
+          if (!selectedExplorerEntry) return;
+          setCopiedExplorerEntry(selectedExplorerEntry);
+          showExplorerToast(`${selectedExplorerEntry.kind === 'dir' ? 'Folder' : 'File'} copied to clipboard`);
+        }
       },
       {
-        id: 'toggle-explorer',
-        title: isExplorerCollapsed ? 'Show Explorer' : 'Hide Explorer',
-        description: 'Toggle the left file tree without leaving the editor area.',
-        keys: ['Mod', 'B'],
-        run: () => toggleExplorerPane()
+        id: 'paste-entry',
+        title: 'Paste Into Folder',
+        description: copiedExplorerEntry ? 'Paste the copied file or folder into the selected location.' : 'Copy a file or folder first, then paste it into the selected folder.',
+        keys: ['Mod', 'V'],
+        disabled: !copiedExplorerEntry,
+        run: () => void pasteEntry()
+      },
+      {
+        id: 'delete-entry',
+        title: 'Delete Selected',
+        description: selectedExplorerEntry ? 'Delete the selected file or folder.' : 'Select a file or folder in Explorer, then delete it.',
+        keys: isMacLike ? ['Mod', 'Backspace'] : ['Delete'],
+        disabled: !selectedExplorerEntry,
+        run: () => {
+          if (!selectedExplorerEntry) return;
+          void deleteEntry(selectedExplorerEntry);
+        }
       },
       {
         id: 'save-file',
@@ -1306,28 +1562,25 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
         run: () => void onSave()
       },
       {
-        id: 'save-all',
-        title: 'Save All',
-        description: dirtyDocCount ? `Write all ${dirtyDocCount} dirty file${dirtyDocCount > 1 ? 's' : ''} to disk.` : 'Available when more than one file has unsaved changes.',
-        keys: ['Mod', 'Shift', 'S'],
-        disabled: dirtyDocCount === 0,
-        run: () => void onSaveAll()
+        id: 'toggle-explorer',
+        title: isExplorerCollapsed ? 'Show Explorer' : 'Hide Explorer',
+        description: 'Toggle the left file tree without leaving the editor area.',
+        keys: ['Mod', 'B'],
+        run: () => toggleExplorerPane()
       },
       {
-        id: 'toggle-preview',
-        title: 'Toggle Preview',
-        description: canTogglePreview ? 'Switch between source and preview for Markdown or HTML.' : 'Available when a Markdown or HTML file is active.',
-        keys: ['Mod', 'Shift', 'V'],
-        disabled: !canTogglePreview,
-        run: () => togglePreviewMode()
+        id: 'open-project',
+        title: 'Open Project',
+        description: 'Add or switch a workspace folder in the Explorer.',
+        keys: ['Mod', 'O'],
+        run: () => void onPickWorkspace()
       }
     ];
-  }, [canSave, canTogglePreview, dirtyDocCount, isExplorerCollapsed, togglePreviewMode]);
+  }, [canSave, copiedExplorerEntry, isExplorerCollapsed, isMacLike, onPickWorkspace, pasteEntry, selectedExplorerEntry, showExplorerToast]);
 
   useEffect(() => {
     function handleWorkspaceShortcut(event: KeyboardEvent) {
       if (event.defaultPrevented) return;
-      if (!event.metaKey && !event.ctrlKey) return;
 
       const panel = panelRef.current;
       const activeElement = document.activeElement;
@@ -1336,6 +1589,29 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
       }
 
       const key = event.key.toLowerCase();
+      const hasMod = event.metaKey || event.ctrlKey;
+
+      if (selectedExplorerEntry && hasMod && !event.altKey && !event.shiftKey && key === 'c') {
+        event.preventDefault();
+        setCopiedExplorerEntry(selectedExplorerEntry);
+        setStatus(selectedExplorerEntry.kind === 'dir' ? 'Folder copied' : 'File copied');
+        showExplorerToast(`${selectedExplorerEntry.kind === 'dir' ? 'Folder' : 'File'} copied to clipboard`);
+        return;
+      }
+
+      if (copiedExplorerEntry && hasMod && !event.altKey && !event.shiftKey && key === 'v') {
+        event.preventDefault();
+        void pasteEntry();
+        return;
+      }
+
+      if (selectedExplorerEntry && ((isMacLike && event.metaKey && key === 'backspace') || (!event.metaKey && !event.ctrlKey && !event.altKey && (event.key === 'Delete' || event.key === 'Backspace')))) {
+        event.preventDefault();
+        void deleteEntry(selectedExplorerEntry);
+        return;
+      }
+
+      if (!hasMod) return;
 
       if (!event.shiftKey && !event.altKey && key === 'o') {
         event.preventDefault();
@@ -1369,7 +1645,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     return () => {
       window.removeEventListener('keydown', handleWorkspaceShortcut);
     };
-  }, [togglePreviewMode, canSave, dirtyDocCount, isExplorerCollapsed]);
+  }, [copiedExplorerEntry, isMacLike, onPickWorkspace, onSave, onSaveAll, pasteEntry, selectedExplorerEntry, togglePreviewMode]);
 
   useEffect(() => {
     const off = fsClient.onWorkspaceEvent((event) => {
@@ -1631,31 +1907,108 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     const isLoading = loadingDirs.includes(entry.path);
     const isOpen = openDocs.some((doc) => doc.path === entry.path);
     const icon = entry.kind === 'file' ? getExplorerFileIcon(entry.path) : null;
+    const isMenuOpen = entryMenuOpenFor === entry.path;
+    const isSelected = selectedExplorerEntry?.path === entry.path;
 
     return (
       <div key={entry.path} className="treeNode">
-        <button
-          className={[
-            entry.path === activePath ? 'fileItem active' : isOpen ? 'fileItem open' : 'fileItem',
-            flashFilePath === entry.path ? 'flash' : ''
-          ].filter(Boolean).join(' ')}
-          data-file-path={entry.path}
-          onClick={() => {
-            if (entry.kind === 'dir') {
-              void toggleDir(entry);
-            } else {
-              void onOpenEntry(entry);
-            }
-          }}
-          title={entry.path}
-          style={{ paddingLeft: `${getTreeItemPadding(depth)}px` }}
-        >
-          <span className="treeToggle">{entry.kind === 'dir' ? (isExpanded ? '⌄' : '›') : ''}</span>
-          <span className={entry.kind === 'dir' ? 'explorerIcon folder' : `explorerIcon file tone-${icon?.tone ?? 'slate'}`} aria-hidden="true">
-            {entry.kind === 'dir' ? '' : icon?.label}
-          </span>
-          <span className="fileName">{entry.name}</span>
-        </button>
+        <div className="explorerEntryRow">
+          <button
+            type="button"
+            className={[
+              isSelected || entry.path === activePath ? 'fileItem active' : isOpen ? 'fileItem open' : 'fileItem',
+              flashFilePath === entry.path ? 'flash' : ''
+            ].filter(Boolean).join(' ')}
+            data-file-path={entry.path}
+            onFocus={() => setSelectedExplorerEntry(entry)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setSelectedExplorerEntry(entry);
+              setExplorerContextMenu({
+                x: event.clientX,
+                y: event.clientY,
+                target: entry,
+                mode: 'full'
+              });
+            }}
+            onClick={() => {
+              setSelectedExplorerEntry(entry);
+              if (entry.kind === 'dir') {
+                void toggleDir(entry);
+              } else {
+                void onOpenEntry(entry);
+              }
+            }}
+            title={entry.path}
+            style={{ paddingLeft: `${getTreeItemPadding(depth)}px` }}
+          >
+            <span className="treeToggle">{entry.kind === 'dir' ? (isExpanded ? '⌄' : '›') : ''}</span>
+            <span className={entry.kind === 'dir' ? 'explorerIcon folder' : `explorerIcon file tone-${icon?.tone ?? 'slate'}`} aria-hidden="true">
+              {entry.kind === 'dir' ? '' : icon?.label}
+            </span>
+            <span className="fileName">{entry.name}</span>
+          </button>
+          <div className="explorerEntryMenuAnchor">
+            {entry.kind === 'dir' ? (
+              <button
+                type="button"
+                className="explorerEntryQuickAction"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setSelectedExplorerEntry(entry);
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  setExplorerContextMenu({
+                    x: rect.right + 6,
+                    y: rect.top,
+                    target: entry,
+                    mode: 'create'
+                  });
+                }}
+                title={`Create in ${entry.name}`}
+                aria-label={`Create in ${entry.name}`}
+              >
+                +
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className={isMenuOpen ? 'explorerEntryAction active' : 'explorerEntryAction'}
+              onClick={(event) => {
+                event.stopPropagation();
+                setSelectedExplorerEntry(entry);
+                setRootMenuOpenFor(null);
+                setEntryMenuOpenFor((current) => current === entry.path ? null : entry.path);
+              }}
+              aria-label={`Actions for ${entry.name}`}
+              aria-expanded={isMenuOpen}
+              title={`Actions for ${entry.name}`}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 6h.01M12 12h.01M12 18h.01" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" />
+              </svg>
+            </button>
+            {isMenuOpen ? (
+              <div className="workspaceRootMenu explorerEntryMenu" role="menu">
+                {entry.kind === 'dir' ? (
+                  <>
+                    <button type="button" className="workspaceRootMenuItem" onClick={() => void createEntryInDirectory(entry.path, 'file')} role="menuitem">
+                      New File
+                    </button>
+                    <button type="button" className="workspaceRootMenuItem" onClick={() => void createEntryInDirectory(entry.path, 'dir')} role="menuitem">
+                      New Folder
+                    </button>
+                  </>
+                ) : null}
+                <button type="button" className="workspaceRootMenuItem" onClick={() => void copyEntry(entry)} role="menuitem">
+                  Copy
+                </button>
+                <button type="button" className="workspaceRootMenuItem danger" onClick={() => void deleteEntry(entry)} role="menuitem">
+                  Delete
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
         {entry.kind === 'dir' && isExpanded ? (
           <div className="treeNodeChildren" style={getTreeChildrenStyle(depth)}>
             {isLoading ? <div className="treeLoading" style={{ paddingLeft: `${getTreeItemPadding(depth + 1) + 18}px` }}>Loading…</div> : null}
@@ -1704,6 +2057,15 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
             className={isActiveRoot ? 'workspaceRootButton active' : 'workspaceRootButton'}
             draggable
             onClick={() => void activateWorkspaceRoot(root)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+                setExplorerContextMenu({
+                  x: event.clientX,
+                  y: event.clientY,
+                  target: { name: rootName, path: root, kind: 'root' },
+                  mode: 'full'
+                });
+            }}
             onDoubleClick={() => toggleWorkspaceRootSection(root)}
             onDragStart={(event) => onWorkspaceRootDragStart(event, root)}
             onDragEnd={onWorkspaceRootDragEnd}
@@ -1716,7 +2078,10 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
             <button
               type="button"
               className={isMenuOpen ? 'workspaceRootAction active' : 'workspaceRootAction'}
-              onClick={() => setRootMenuOpenFor((current) => current === root ? null : root)}
+              onClick={() => {
+                setEntryMenuOpenFor(null);
+                setRootMenuOpenFor((current) => current === root ? null : root);
+              }}
               aria-label={`Project actions for ${rootName}`}
               aria-expanded={isMenuOpen}
               title={`Project actions for ${rootName}`}
@@ -1799,6 +2164,26 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
                   <circle cx="12" cy="12" r="7.25" fill="none" stroke="currentColor" strokeWidth="1.7" />
                   <circle cx="12" cy="12" r="2.25" fill="currentColor" />
                 </svg>
+              </button>
+              <button
+                type="button"
+                className="explorerHeaderCreate"
+                onClick={() => {
+                  const targetDir = getExplorerPasteTarget() ?? workspaceRoot;
+                  if (!targetDir) return;
+                  const targetName = selectedExplorerEntry?.kind === 'dir' ? selectedExplorerEntry.name : activeWorkspaceRootName ?? 'current project';
+                  setExplorerContextMenu({
+                    x: window.innerWidth > 0 ? Math.min(window.innerWidth - 220, 180) : 180,
+                    y: 108,
+                    target: { name: targetName, path: targetDir, kind: targetDir === workspaceRoot ? 'root' : 'dir' },
+                    mode: 'create'
+                  });
+                }}
+                title={workspaceRoot ? `Create in ${selectedExplorerEntry?.kind === 'dir' ? selectedExplorerEntry.name : activeWorkspaceRootName ?? 'current project'}` : 'Open a project first'}
+                aria-label="Create file in current project"
+                disabled={!workspaceRoot}
+              >
+                +
               </button>
               <button
                 type="button"
@@ -2130,6 +2515,126 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
           )}
         </div>
       </div>
+
+      {explorerContextMenu ? (
+        <div className="explorerContextOverlay" onClick={() => setExplorerContextMenu(null)}>
+          <div
+            className="explorerContextMenu"
+            role="menu"
+            style={{ left: `${Math.min(explorerContextMenu.x, window.innerWidth - 200)}px`, top: `${Math.min(explorerContextMenu.y, window.innerHeight - 220)}px` }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            {explorerContextMenu.target.kind !== 'file' ? (
+              <>
+                <button type="button" className="workspaceRootMenuItem" onClick={() => beginCreateEntry(explorerContextMenu.target.path, 'file')} role="menuitem">
+                  New File
+                </button>
+                <button type="button" className="workspaceRootMenuItem" onClick={() => beginCreateEntry(explorerContextMenu.target.path, 'dir')} role="menuitem">
+                  New Folder
+                </button>
+              </>
+            ) : null}
+            {explorerContextMenu.mode === 'full' && explorerContextMenu.target.kind !== 'root' ? (
+              <>
+                {explorerContextMenu.target.kind === 'file' ? (
+                  <button
+                    type="button"
+                    className="workspaceRootMenuItem"
+                    onClick={() => {
+                      if (explorerContextMenu.target.kind === 'file') {
+                        void onOpenEntry(explorerContextMenu.target);
+                      }
+                    }}
+                    role="menuitem"
+                  >
+                    Open
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="workspaceRootMenuItem"
+                  onClick={() => {
+                    if (explorerContextMenu.target.kind === 'root') return;
+                    setCopiedExplorerEntry(explorerContextMenu.target);
+                    setExplorerContextMenu(null);
+                    setStatus(explorerContextMenu.target.kind === 'dir' ? 'Folder copied' : 'File copied');
+                    showExplorerToast(`${explorerContextMenu.target.kind === 'dir' ? 'Folder' : 'File'} copied to clipboard`);
+                  }}
+                  role="menuitem"
+                >
+                  Copy
+                </button>
+              </>
+            ) : null}
+            {explorerContextMenu.mode === 'full' && copiedExplorerEntry && explorerContextMenu.target.kind !== 'file' ? (
+              <button
+                type="button"
+                className="workspaceRootMenuItem"
+                onClick={() => {
+                  if (explorerContextMenu.target.kind === 'root') {
+                    setSelectedExplorerEntry(null);
+                  } else {
+                    setSelectedExplorerEntry(explorerContextMenu.target);
+                  }
+                  void pasteEntry(explorerContextMenu.target.kind === 'root' ? explorerContextMenu.target.path : explorerContextMenu.target.path);
+                  setExplorerContextMenu(null);
+                }}
+                role="menuitem"
+              >
+                Paste
+              </button>
+            ) : null}
+            {explorerContextMenu.mode === 'full' && explorerContextMenu.target.kind === 'root' ? (
+              <button type="button" className="workspaceRootMenuItem danger" onClick={() => void removeWorkspaceRoot(explorerContextMenu.target.path)} role="menuitem">
+                Remove From Workspace
+              </button>
+            ) : explorerContextMenu.mode === 'full' ? (
+              <button type="button" className="workspaceRootMenuItem danger" onClick={() => explorerContextMenu.target.kind !== 'root' ? void deleteEntry(explorerContextMenu.target) : undefined} role="menuitem">
+                Delete
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {explorerInputState ? (
+        <div className="settingsHelpOverlay explorerInputOverlay" onClick={() => setExplorerInputState(null)}>
+          <div className="settingsHelpDialog explorerInputDialog" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <div className="settingsHelpDialogHeader">
+              <div className="settingsHelpDialogTitle">{explorerInputState.title}</div>
+              <button type="button" className="settingsHelpCloseButton" aria-label="Close" onClick={() => setExplorerInputState(null)}>
+                &times;
+              </button>
+            </div>
+            <form
+              className="explorerInputForm"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void submitExplorerInput();
+              }}
+            >
+              <div className="explorerInputMeta">{explorerInputState.targetDir}</div>
+              <input
+                ref={explorerInputRef}
+                className="explorerInputField"
+                value={explorerInputState.value}
+                onChange={(event) => setExplorerInputState((current) => current ? { ...current, value: event.target.value } : current)}
+                placeholder={explorerInputState.mode === 'create-dir' ? 'new-folder' : 'untitled.txt'}
+              />
+              <div className="explorerInputActions">
+                <button type="button" onClick={() => setExplorerInputState(null)}>Cancel</button>
+                <button type="submit">{explorerInputState.confirmLabel}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
+
+      {explorerToast ? (
+        <div className="explorerToast" role="status" aria-live="polite">
+          {explorerToast}
+        </div>
+      ) : null}
     </div>
   );
 });

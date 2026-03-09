@@ -50,11 +50,8 @@ make_icon 512 icon_512x512.png
 cp "$SOURCE_PNG" "$ICONSET_DIR/icon_512x512@2x.png"
 
 if ! iconutil -c icns "$ICONSET_DIR" -o "$TARGET_ICNS"; then
-  if [[ -f "$TARGET_ICNS" ]]; then
-    echo "Reusing existing macOS icon after iconutil failure: $TARGET_ICNS"
-    exit 0
-  fi
-  exit 1
+  echo "iconutil could not rebuild icon.icns; continuing with fresh PNG source for electron-builder." >&2
+  exit 0
 fi
 
 echo "Generated macOS icon: $TARGET_ICNS"

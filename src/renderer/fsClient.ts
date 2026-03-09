@@ -147,6 +147,22 @@ export const fsClient = {
     return window.assistantDesk.writeWorkspaceTextFile(filePath, contents);
   },
 
+  async createWorkspaceFile(filePath: string, contents = ''): Promise<void> {
+    return window.assistantDesk.createWorkspaceFile(filePath, contents);
+  },
+
+  async createWorkspaceDir(dirPath: string): Promise<void> {
+    return window.assistantDesk.createWorkspaceDir(dirPath);
+  },
+
+  async copyWorkspaceEntry(sourcePath: string, destinationPath: string): Promise<void> {
+    return window.assistantDesk.copyWorkspaceEntry(sourcePath, destinationPath);
+  },
+
+  async deleteWorkspaceEntry(targetPath: string): Promise<void> {
+    return window.assistantDesk.deleteWorkspaceEntry(targetPath);
+  },
+
   async runWorkspaceCommand(command: string, timeoutMs = 20000): Promise<{ stdout: string; stderr: string; exitCode: number | null; signal: string | null; cwd: string }> {
     return window.assistantDesk.execWorkspaceCommand(command, timeoutMs);
   },

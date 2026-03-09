@@ -3237,6 +3237,7 @@
 }
 
 .explorerHeaderLocate,
+.explorerHeaderCreate,
 .explorerHeaderToggle {
   display: inline-flex;
   align-items: center;
@@ -3260,6 +3261,13 @@
   border: 1px solid color-mix(in srgb, var(--border) 82%, var(--text) 6%);
 }
 
+.explorerHeaderCreate {
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, var(--text) 6%);
+  font-size: 14px;
+  font-weight: 600;
+}
+
 .explorerHeaderLocate svg {
   width: 11px;
   height: 11px;
@@ -3270,7 +3278,13 @@
   cursor: default;
 }
 
+.explorerHeaderCreate:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
 .explorerHeaderLocate:hover:not(:disabled),
+.explorerHeaderCreate:hover:not(:disabled),
 .explorerHeaderToggle:hover {
   background: color-mix(in srgb, var(--panel) 72%, var(--text) 8%);
   color: var(--text);
@@ -3539,6 +3553,169 @@
   cursor: pointer;
   text-align: left;
   color: var(--text);
+}
+
+.explorerEntryRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.explorerEntryMenuAnchor {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.explorerEntryQuickAction {
+  width: 24px;
+  min-width: 24px;
+  height: 100%;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0;
+  transition: background 120ms ease, color 120ms ease, opacity 120ms ease;
+}
+
+.explorerEntryAction {
+  width: 24px;
+  min-width: 24px;
+  height: 100%;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0;
+  transition: background 120ms ease, color 120ms ease, opacity 120ms ease;
+}
+
+.explorerEntryAction svg {
+  width: 11px;
+  height: 11px;
+}
+
+.explorerEntryQuickAction:hover,
+.explorerEntryAction:hover,
+.explorerEntryAction.active {
+  background: color-mix(in srgb, var(--panel) 72%, var(--text) 8%);
+  color: var(--text);
+}
+
+.explorerEntryRow:hover .explorerEntryAction,
+.explorerEntryRow:hover .explorerEntryQuickAction,
+.explorerEntryQuickAction:focus-visible,
+.explorerEntryAction.active {
+  opacity: 1;
+}
+
+.explorerEntryMenu {
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 148px;
+}
+
+.explorerContextOverlay,
+.explorerInputOverlay {
+  z-index: 2200;
+}
+
+.explorerContextMenu {
+  min-width: 168px;
+  padding: 6px;
+  position: fixed;
+  z-index: 2201;
+  display: grid;
+  gap: 3px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, var(--text) 8%);
+  background: color-mix(in srgb, var(--panel-2) 97%, var(--bg) 3%);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(14px);
+}
+
+.explorerContextOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2200;
+  background: transparent;
+}
+
+.explorerContextMenu .workspaceRootMenuItem {
+  min-height: 30px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+
+.explorerContextMenu .workspaceRootMenuItem:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+}
+
+.explorerContextMenu .workspaceRootMenuItem.danger:hover {
+  background: color-mix(in srgb, #d94841 14%, var(--panel));
+}
+
+.explorerInputDialog {
+  width: min(520px, calc(100vw - 36px));
+  max-height: none;
+}
+
+.explorerInputForm {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.explorerInputMeta {
+  font-size: 11px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.explorerInputField {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, var(--text) 8%);
+  background: color-mix(in srgb, var(--panel) 90%, var(--bg) 10%);
+  color: var(--text);
+  font: inherit;
+}
+
+.explorerInputActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.explorerToast {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  z-index: 2202;
+  max-width: min(320px, calc(100% - 36px));
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, var(--text) 8%);
+  background: color-mix(in srgb, var(--panel-2) 96%, var(--bg) 4%);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.18);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+  backdrop-filter: blur(12px);
 }
 
 .treeNode {

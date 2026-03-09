@@ -1,5 +1,5 @@
 import DOMPurify from 'dompurify';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
@@ -15,6 +15,21 @@ type Msg = {
   role: 'user' | 'assistant';
   content: string;
 };
+
+const MessageList = memo(function MessageList({ messages }: { messages: Msg[] }) {
+  return (
+    <div>
+      {messages.map((m, idx) => (
+        <div key={idx} className={`msg ${m.role === 'user' ? 'user' : 'assistant'}`}>
+          <div className="meta">
+            <div>{m.role}</div>
+          </div>
+          <div className="bubble"><ChatBubbleContent content={m.content} renderMarkdown={m.role === 'assistant'} /></div>
+        </div>
+      ))}
+    </div>
+  );
+});
 
 type ThreadMap = Record<string, Msg[]>;
 type ThreadUpdatedAtMap = Record<string, number>;
@@ -1039,7 +1054,10 @@ export function ChatPage(props: {
   const [immersiveWorkspaceOpen, setImmersiveWorkspaceOpen] = useState(false);
   const [workspaceContext, setWorkspaceContext] = useState<WorkspacePanelContext>({
     workspaceRoot: null,
+    workspaceScopePath: null,
     activePath: null,
+    selectedPath: null,
+    selectedEntryKind: null,
     activeText: '',
     activeFileName: null,
     topLevelEntries: [],
@@ -1086,7 +1104,6 @@ export function ChatPage(props: {
   const [selectedInspectorSkillError, setSelectedInspectorSkillError] = useState<string | null>(null);
   const [nativeAgentInspectorSnapshot, setNativeAgentInspectorSnapshot] = useState<NativeAgentInspectorSnapshot | null>(null);
   const [pendingAgentQuestion, setPendingAgentQuestion] = useState<PendingAgentQuestion | null>(null);
-  const [isComposing, setIsComposing] = useState(false);
   const [profileSwitchNotice, setProfileSwitchNotice] = useState<string | null>(null);
   const activeStreamRef = useRef<{ close: () => void } | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
@@ -1107,6 +1124,7 @@ export function ChatPage(props: {
   const lastMirroredTerminalInputRef = useRef<{ text: string; at: number } | null>(null);
   const threadPersistTimerRef = useRef<number | null>(null);
   const pendingThreadPersistRef = useRef<{ profileId: string; messages: Msg[]; updatedAt: number } | null>(null);
+  const isComposingRef = useRef(false);
   const { threadsByProfile, threadUpdatedAtByProfile, threadSummaryByProfile } = threadStore;
 
   function clearThreadPersistTimer() {
@@ -1822,9 +1840,12 @@ export function ChatPage(props: {
   const workspaceSummary = useMemo(() => {
     if (!workspaceContext.workspaceRoot) return 'No workspace selected';
     const entryNames = workspaceContext.topLevelEntries.slice(0, 8).map((entry) => `${entry.kind === 'dir' ? '[dir]' : '[file]'} ${entry.name}`);
+    const focusPath = workspaceContext.selectedPath ?? workspaceContext.activePath;
+    const focusLabel = workspaceContext.selectedEntryKind === 'dir' ? 'Selected folder' : 'Open file';
     const lines = [
       `Workspace root: ${workspaceContext.workspaceRoot}`,
-      `Open file: ${workspaceContext.activePath ?? 'None'}`,
+      `Workspace scope: ${workspaceContext.workspaceScopePath ?? workspaceContext.workspaceRoot}`,
+      `${focusLabel}: ${focusPath ?? 'None'}`,
       `Unsaved edits: ${workspaceContext.dirty ? 'yes' : 'no'}`,
       `Top-level entries: ${entryNames.length ? entryNames.join(', ') : '(empty)'}`,
       `Interaction mode: ${settings.interactionMode === 'claude_cli' ? 'Claude CLI runtime session' : settings.interactionMode === 'claude_code' ? 'Native agent persistent coding session' : 'Standard chat session'}`
@@ -3024,14 +3045,7 @@ export function ChatPage(props: {
                     </div>
                   ) : null}
 
-                  {messages.map((m, idx) => (
-                    <div key={idx} className={`msg ${m.role === 'user' ? 'user' : 'assistant'}`}>
-                      <div className="meta">
-                        <div>{m.role}</div>
-                      </div>
-                      <div className="bubble"><ChatBubbleContent content={m.content} renderMarkdown={m.role === 'assistant'} /></div>
-                    </div>
-                  ))}
+                  <MessageList messages={messages} />
                 </div>
               )}
             </div>
@@ -3817,10 +3831,17 @@ export function ChatPage(props: {
               <textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                onCompositionStart={() => setIsComposing(true)}
-                onCompositionEnd={() => setIsComposing(false)}
+                onCompositionStart={() => {
+                  isComposingRef.current = true;
+                }}
+                onCompositionEnd={() => {
+                  isComposingRef.current = false;
+                }}
                 onKeyDown={(e) => {
-                  if (e.nativeEvent.isComposing || isComposing || e.keyCode === 229) {
+                  if (e.key !== 'Enter') {
+                    return;
+                  }
+                  if (e.nativeEvent.isComposing || isComposingRef.current || e.keyCode === 229) {
                     return;
                   }
                   if (e.key === 'Enter' && !e.shiftKey) {
@@ -3851,7 +3872,7 @@ export function ChatPage(props: {
                     <div>
                       <div className="cardTitle">Workspace Context</div>
                       <div className="claudeMemoryMeta">
-                        {workspaceContext.activePath ?? workspaceContext.workspaceRoot ?? 'No workspace open'}
+                        {workspaceContext.workspaceScopePath ?? workspaceContext.selectedPath ?? workspaceContext.activePath ?? workspaceContext.workspaceRoot ?? 'No workspace open'}
                       </div>
                     </div>
                     <div className="immersiveWorkspaceActions">

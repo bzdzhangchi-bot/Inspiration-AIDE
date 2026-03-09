@@ -148,6 +148,10 @@ declare global {
       readWorkspaceTextFileTail(filePath: string, maxChars?: number): Promise<{ contents: string; size: number; mtimeMs: number }>;
       readWorkspaceFile(filePath: string): Promise<{ kind: 'text' | 'binary'; contents: string | null; contentsEncoding: 'utf8' | 'base64' | null; mimeType: string | null; readOnly: boolean; size: number }>;
       writeWorkspaceTextFile(filePath: string, contents: string): Promise<void>;
+      createWorkspaceFile(filePath: string, contents?: string): Promise<void>;
+      createWorkspaceDir(dirPath: string): Promise<void>;
+      copyWorkspaceEntry(sourcePath: string, destinationPath: string): Promise<void>;
+      deleteWorkspaceEntry(targetPath: string): Promise<void>;
       openArbitraryTextFile(): Promise<{ path: string; contents: string } | null>;
       getClaudeMemorySnapshot(workspaceRoot?: string | null): Promise<ClaudeMemorySnapshot>;
       readClaudeMemoryFile(filePath: string, workspaceRoot?: string | null): Promise<string>;

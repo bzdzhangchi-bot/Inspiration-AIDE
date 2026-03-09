@@ -1209,6 +1209,12 @@ async function writeFileAtomic(filePath, contents) {
   await fsp.rename(tmp, filePath);
 }
 
+function assertSiblingPaths(sourcePath, destinationPath) {
+  if (sourcePath === destinationPath) {
+    throw new Error('Source and destination must be different');
+  }
+}
+
 function detectBinary(buffer) {
   const sample = buffer.subarray(0, Math.min(buffer.length, 4096));
   let suspicious = 0;
@@ -1826,6 +1832,53 @@ function registerIpc() {
     const resolved = resolveWithinWorkspace(filePath);
     await writeFileAtomic(resolved, contents);
     emitWorkspaceEvent({ type: 'changed', eventType: 'change', path: resolved });
+  });
+
+  ipcMain.handle('fs:createWorkspaceFile', async (_ev, { filePath, contents }) => {
+    const resolved = resolveWithinWorkspace(filePath);
+    if (await pathExists(resolved)) {
+      throw new Error('File already exists');
+    }
+    await writeFileAtomic(resolved, typeof contents === 'string' ? contents : '');
+    emitWorkspaceEvent({ type: 'changed', eventType: 'create', path: resolved });
+  });
+
+  ipcMain.handle('fs:createWorkspaceDir', async (_ev, { dirPath }) => {
+    const resolved = resolveWithinWorkspace(dirPath);
+    if (await pathExists(resolved)) {
+      throw new Error('Folder already exists');
+    }
+    await fsp.mkdir(resolved, { recursive: false });
+    emitWorkspaceEvent({ type: 'changed', eventType: 'create', path: resolved });
+  });
+
+  ipcMain.handle('fs:copyWorkspaceEntry', async (_ev, { sourcePath, destinationPath }) => {
+    const resolvedSource = resolveWithinWorkspace(sourcePath);
+    const resolvedDestination = resolveWithinWorkspace(destinationPath);
+    assertSiblingPaths(resolvedSource, resolvedDestination);
+    if (!(await pathExists(resolvedSource))) {
+      throw new Error('Source path does not exist');
+    }
+    if (await pathExists(resolvedDestination)) {
+      throw new Error('Destination already exists');
+    }
+
+    await fsp.mkdir(path.dirname(resolvedDestination), { recursive: true });
+    await fsp.cp(resolvedSource, resolvedDestination, {
+      recursive: true,
+      errorOnExist: true,
+      force: false
+    });
+    emitWorkspaceEvent({ type: 'changed', eventType: 'copy', path: resolvedDestination });
+  });
+
+  ipcMain.handle('fs:deleteWorkspaceEntry', async (_ev, { targetPath }) => {
+    const resolved = resolveWithinWorkspace(targetPath);
+    if (!(await pathExists(resolved))) {
+      throw new Error('Path does not exist');
+    }
+    await fsp.rm(resolved, { recursive: true, force: false });
+    emitWorkspaceEvent({ type: 'changed', eventType: 'delete', path: resolved });
   });
 
   ipcMain.handle('fs:openArbitraryTextFile', async () => {
