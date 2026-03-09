@@ -2,15 +2,15 @@
 
 ## English
 
-Inspiration 0.1.7 focuses on the workspace experience. This release improves Explorer file operations, adds faster in-app creation and context actions, and makes the chat composer feel more responsive during real typing and IME usage.
+Inspiration 0.1.7 focuses on the workspace experience. This release makes the Explorer materially more usable for real project work, adds folder-scoped workspace context, and improves the chat composer for IME-heavy typing.
 
 ### Highlights
 
-- Explorer now supports copy, paste, delete, and create flows for files and folders with clearer feedback.
-- Folder selection can now act as an isolated workspace scope for chat context.
-- The `+` create entry now supports both new files and new folders.
-- Context menus and copy/paste feedback were refined to feel lighter and more usable.
-- Chat input handling was improved to avoid interfering with IME switching and to reduce typing lag.
+- Explorer now supports copy, paste, delete, and create actions for both files and folders, including keyboard shortcuts and clearer in-app feedback.
+- Folder selection can now be used as an isolated workspace scope, so chats can target a subdirectory instead of the full project.
+- The `+` entry was upgraded into a true create menu and now supports both `New File` and `New Folder`.
+- Context menus were refined to feel lighter and more focused, with separate create actions and safer folder paste behavior.
+- The chat composer now avoids interfering with IME switching and feels more responsive during continuous typing.
 
 ### Downloads
 
@@ -21,15 +21,15 @@ Inspiration 0.1.7 focuses on the workspace experience. This release improves Exp
 
 ## 中文
 
-Inspiration 0.1.7 主要聚焦工作区体验。这次更新补强了 Explorer 的文件操作能力，加入更顺手的新建与右键操作，并优化了聊天输入框在真实输入法场景下的体验与性能。
+Inspiration 0.1.7 主要聚焦工作区体验。这次更新把 Explorer 补到了更接近日常可用的状态，加入文件夹级别的隔离工作区，并优化了聊天输入框在中文输入法场景下的体验。
 
 ### 重点更新
 
-- Explorer 现在支持更完整的文件与文件夹复制、粘贴、删除、新建流程，并增加更明确的操作反馈。
-- 选中文件夹后，可以作为聊天上下文里的隔离工作区作用域使用。
-- `+` 新建入口现在同时支持新建文件和新建文件夹。
-- 右键菜单和复制/粘贴反馈体验做了收敛，交互更轻更直接。
-- 聊天输入框的按键处理已优化，避免干扰输入法切换，并减轻输入卡顿。
+- Explorer 现在支持文件和文件夹的复制、粘贴、删除、新建，并补齐了快捷键和更明确的应用内提示。
+- 选中文件夹后，可以把它作为聊天上下文里的隔离工作区使用，不再只能基于整个项目。
+- `+` 入口已升级为真正的新建菜单，同时支持 `New File` 和 `New Folder`。
+- 右键菜单做了收敛，创建动作与普通操作分开，文件夹粘贴也增加了更安全的保护逻辑。
+- 聊天输入框的按键处理已优化，减少对输入法切换的干扰，并缓解长对话场景下的输入卡顿。
 
 ### 下载产物
 
