@@ -326,7 +326,7 @@ function App() {
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={toggleChatDrawer}
                 aria-pressed={isChatDrawerOpen}
-                title={isChatDrawerOpen ? 'Hide Assistant panel' : 'Show Assistant panel'}
+                title={isChatDrawerOpen ? 'Hide Inspiration panel' : 'Show Inspiration panel'}
               >
                 <span className="appSideRailGlyph" aria-hidden="true">
                   <svg viewBox="0 0 24 24">
@@ -334,7 +334,7 @@ function App() {
                     <path d="M9 10.5h6M9 13.5h4.5" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" />
                   </svg>
                 </span>
-                <span className="appSideRailText">Assistant</span>
+                <span className="appSideRailText">Inspiration</span>
                 <span className="appSideRailMeta">{isChatDrawerOpen ? 'On' : 'Off'}</span>
               </button>
 
@@ -367,7 +367,7 @@ function App() {
       <div className="statusBar">
         <div className="statusBarGroup">
           <button className="statusBarItem" type="button">
-            assistant-desk
+            Inspiration
           </button>
           <div className="statusBarSep" />
           <button className="statusBarItem" type="button">

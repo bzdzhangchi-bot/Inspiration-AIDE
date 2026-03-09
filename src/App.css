@@ -150,9 +150,18 @@
   height: 44px;
   padding: 0;
   border-radius: 14px;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--panel-2) 84%, var(--text) 4%);
+  border: 1px solid color-mix(in srgb, var(--border) 82%, var(--text) 8%);
+  color: var(--text);
+}
+
+.sidebarBrand svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
 }
 
 .nav {
@@ -388,6 +397,101 @@
   font-size: 12px;
   line-height: 1.4;
   color: var(--muted);
+}
+
+.settingsAppMetaGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.settingsAppMetaCard {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, var(--text) 8%);
+  background: color-mix(in srgb, var(--panel) 88%, var(--text) 3%);
+}
+
+.settingsAppMetaLabel {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.settingsUpdateActions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.settingsLinkButton {
+  text-decoration: none;
+}
+
+.settingsUpdateStatus {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, var(--text) 8%);
+  background: color-mix(in srgb, var(--panel) 84%, var(--text) 2%);
+}
+
+.settingsUpdateStatus.available {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+}
+
+.settingsUpdateStatusTitle {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.settingsUpdateStatusMeta {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.settingsDownloadProgress {
+  display: grid;
+  gap: 8px;
+}
+
+.settingsDownloadProgressRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settingsDownloadProgressBar {
+  width: 100%;
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel-2) 84%, var(--text) 6%);
+}
+
+.settingsDownloadProgressBar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 88%, white 12%), color-mix(in srgb, var(--accent) 56%, white 44%));
+}
+
+.settingsUpdateError {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, #d94841 28%, var(--border));
+  background: color-mix(in srgb, #d94841 8%, var(--panel));
+  color: color-mix(in srgb, #d94841 84%, var(--text));
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .settingsScrollCard {
@@ -707,6 +811,10 @@
 
   .gitCommitPane {
     grid-column: auto;
+  }
+
+  .settingsAppMetaGrid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

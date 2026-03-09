@@ -199,6 +199,24 @@ function areSettingsEqual(left: SettingsState, right: SettingsState) {
   return true;
 }
 
+function formatBytes(value: number | null | undefined) {
+  if (!Number.isFinite(value) || (value ?? 0) <= 0) return 'Unknown size';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let size = value ?? 0;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  return `${size >= 10 || unitIndex === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function formatPublishedAt(value: string | null) {
+  if (!value) return 'Unknown';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
 export function SettingsPage(props: {
   settings: SettingsState;
   onChange: (next: SettingsState) => void;
@@ -206,10 +224,17 @@ export function SettingsPage(props: {
   onThemeChange: (next: 'system' | 'dark' | 'light') => void;
 }) {
   const { settings, onChange, themeMode, onThemeChange } = props;
-  const [tab, setTab] = useState<'model' | 'appearance'>('model');
+  const [tab, setTab] = useState<'model' | 'appearance' | 'app'>('model');
   const [draft, setDraft] = useState<SettingsState>(settings);
   const [selectedProfileId, setSelectedProfileId] = useState(settings.activeProfileId);
   const [isProfilesHelpOpen, setIsProfilesHelpOpen] = useState(false);
+  const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
+  const [updateSummary, setUpdateSummary] = useState<AppUpdateSummary | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+  const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
+  const [isDownloadingUpdate, setIsDownloadingUpdate] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<{ fileName: string; percent: number | null; receivedBytes: number; totalBytes: number | null } | null>(null);
+  const [downloadedUpdatePath, setDownloadedUpdatePath] = useState<string | null>(null);
 
   useEffect(() => {
     setDraft(settings);
@@ -226,6 +251,59 @@ export function SettingsPage(props: {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [isProfilesHelpOpen]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void window.assistantDesk.getAppInfo().then((info) => {
+      if (!cancelled) setAppInfo(info);
+    }).catch(() => {
+      if (!cancelled) setAppInfo(null);
+    });
+
+    const unsubscribe = window.assistantDesk.onAppUpdateEvent((event) => {
+      if (event.type === 'download-start') {
+        setIsDownloadingUpdate(true);
+        setDownloadedUpdatePath(null);
+        setUpdateError(null);
+        setDownloadProgress({
+          fileName: event.fileName,
+          percent: 0,
+          receivedBytes: 0,
+          totalBytes: null
+        });
+        return;
+      }
+
+      if (event.type === 'download-progress') {
+        setIsDownloadingUpdate(true);
+        setDownloadProgress({
+          fileName: event.fileName,
+          percent: event.percent,
+          receivedBytes: event.receivedBytes,
+          totalBytes: event.totalBytes
+        });
+        return;
+      }
+
+      setIsDownloadingUpdate(false);
+      setDownloadedUpdatePath(event.filePath);
+      setDownloadProgress({
+        fileName: event.fileName,
+        percent: 100,
+        receivedBytes: event.totalBytes,
+        totalBytes: event.totalBytes
+      });
+      if (event.openError) {
+        setUpdateError(`Installer downloaded, but macOS could not open it automatically: ${event.openError}`);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
 
   const isDirty = useMemo(() => !areSettingsEqual(draft, settings), [draft, settings]);
   const selectedProfile = useMemo(() => {
@@ -257,6 +335,11 @@ export function SettingsPage(props: {
     return validationByProfile.get(selectedProfile.id) ?? [];
   }, [selectedProfile, validationByProfile]);
   const canSave = isDirty && totalErrors === 0;
+  const pageSubtitle = tab === 'model'
+    ? 'Manage multiple model profiles and chat modes'
+    : tab === 'appearance'
+      ? 'Theme and typography'
+      : 'App identity, release channel, and updates';
   const defaultProfile = useMemo(() => {
     return draft.profiles.find((profile) => profile.id === draft.activeProfileId) ?? draft.profiles[0] ?? null;
   }, [draft.activeProfileId, draft.profiles]);
@@ -270,6 +353,41 @@ export function SettingsPage(props: {
     if (!selectedProfile) return '';
     return profileMetaText(selectedProfile);
   }, [selectedProfile]);
+
+  async function checkForUpdates() {
+    setIsCheckingUpdates(true);
+    setUpdateError(null);
+    try {
+      const summary = await window.assistantDesk.checkForUpdates();
+      setUpdateSummary(summary);
+      if (!summary.asset) {
+        setUpdateError(`Latest release found, but no ${appInfo?.arch ?? 'current'} installer asset was matched.`);
+      }
+    } catch (error) {
+      setUpdateError(error instanceof Error ? error.message : 'Failed to check for updates.');
+    } finally {
+      setIsCheckingUpdates(false);
+    }
+  }
+
+  async function downloadLatestUpdate() {
+    setIsDownloadingUpdate(true);
+    setUpdateError(null);
+    try {
+      const summary = await window.assistantDesk.downloadLatestUpdate();
+      setUpdateSummary(summary);
+      if (summary.downloadedFilePath) {
+        setDownloadedUpdatePath(summary.downloadedFilePath);
+      }
+      if (summary.openError) {
+        setUpdateError(`Installer downloaded, but macOS could not open it automatically: ${summary.openError}`);
+      }
+    } catch (error) {
+      setUpdateError(error instanceof Error ? error.message : 'Failed to download update.');
+    } finally {
+      setIsDownloadingUpdate(false);
+    }
+  }
 
 
   function updateSelectedProfile(updater: (profile: ModelProfile) => ModelProfile) {
@@ -718,7 +836,7 @@ export function SettingsPage(props: {
       <div className="pageHeader">
         <div>
           <div className="pageTitle">Settings</div>
-          <div className="pageSubtitle">{tab === 'model' ? 'Manage multiple model profiles and chat modes' : 'Theme and typography'}</div>
+          <div className="pageSubtitle">{pageSubtitle}</div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {isDirty ? <div className="pill" style={{ opacity: 1 }}>Unsaved</div> : null}
@@ -955,6 +1073,10 @@ export function SettingsPage(props: {
             <span className="settingsPrimaryNavLabel">Appearance</span>
             <span className="settingsPrimaryNavMeta">Theme, UI, assistant, editor, terminal</span>
           </button>
+          <button type="button" className={tab === 'app' ? 'settingsPrimaryNavItem active' : 'settingsPrimaryNavItem'} onClick={() => setTab('app')}>
+            <span className="settingsPrimaryNavLabel">App</span>
+            <span className="settingsPrimaryNavMeta">Branding, versions, update delivery</span>
+          </button>
         </aside>
 
         {tab === 'model' ? (
@@ -1096,7 +1218,7 @@ export function SettingsPage(props: {
               ) : null}
             </div>
           </div>
-        ) : (
+        ) : tab === 'appearance' ? (
           <div className="card settingsScrollCard settingsContentCard">
             <div className="form">
               <div className="settingsSection">
@@ -1122,11 +1244,117 @@ export function SettingsPage(props: {
               </div>
 
               {renderFontControls('UI', 'uiFontSize', 'uiFontFamily')}
-              {renderFontControls('Assistant', 'chatFontSize', 'chatFontFamily')}
+              {renderFontControls('Inspiration chat', 'chatFontSize', 'chatFontFamily')}
               {renderFontControls('Editor', 'editorFontSize', 'editorFontFamily')}
               {renderFontControls('Terminal', 'terminalFontSize', 'terminalFontFamily')}
 
               <div className="footerHint">Each area can now use its own size and font stack. Mono works best for editor and terminal.</div>
+            </div>
+          </div>
+        ) : (
+          <div className="card settingsScrollCard settingsContentCard">
+            <div className="form">
+              <div className="settingsSection">
+                <div className="settingsSectionHeader">
+                  <div className="settingsSectionTitle">About Inspiration</div>
+                  <div className="settingsSectionHint">User-facing branding now ships as Inspiration. Local storage paths remain unchanged so existing workspaces, settings, and chat state continue to load.</div>
+                </div>
+
+                <div className="settingsAppMetaGrid">
+                  <div className="settingsAppMetaCard">
+                    <span className="settingsAppMetaLabel">App name</span>
+                    <strong>Inspiration</strong>
+                  </div>
+                  <div className="settingsAppMetaCard">
+                    <span className="settingsAppMetaLabel">Current build</span>
+                    <strong>{appInfo ? `v${appInfo.displayVersion}` : 'Loading...'}</strong>
+                  </div>
+                  <div className="settingsAppMetaCard">
+                    <span className="settingsAppMetaLabel">Platform</span>
+                    <strong>{appInfo ? `${appInfo.platform} / ${appInfo.arch}` : 'Loading...'}</strong>
+                  </div>
+                  <div className="settingsAppMetaCard">
+                    <span className="settingsAppMetaLabel">Release track</span>
+                    <strong>{appInfo ? (appInfo.isPackaged ? `Published release v${appInfo.releaseVersion}` : `Local development build from v${appInfo.releaseVersion}`) : 'Loading...'}</strong>
+                  </div>
+                  <div className="settingsAppMetaCard">
+                    <span className="settingsAppMetaLabel">Installer download folder</span>
+                    <strong>{appInfo?.downloadsPath ?? 'Loading...'}</strong>
+                  </div>
+                </div>
+              </div>
+
+              <div className="settingsSection">
+                <div className="settingsSectionHeader">
+                  <div className="settingsSectionTitle">In-App Updates</div>
+                  <div className="settingsSectionHint">The app checks the latest GitHub release, matches the current Mac architecture, downloads the installer into Downloads, and opens it for you. This avoids sending users back to GitHub for every upgrade.</div>
+                </div>
+
+                <div className="settingsUpdateActions">
+                  <button type="button" onClick={() => void checkForUpdates()} disabled={isCheckingUpdates || isDownloadingUpdate}>
+                    {isCheckingUpdates ? 'Checking...' : 'Check for updates'}
+                  </button>
+                  <button
+                    type="button"
+                    className="secondaryButton"
+                    onClick={() => void downloadLatestUpdate()}
+                    disabled={isCheckingUpdates || isDownloadingUpdate || updateSummary?.status !== 'available' || !updateSummary?.asset}
+                  >
+                    {isDownloadingUpdate ? 'Downloading...' : 'Download latest installer'}
+                  </button>
+                  {updateSummary?.htmlUrl ? (
+                    <a className="secondaryButton settingsLinkButton" href={updateSummary.htmlUrl} target="_blank" rel="noreferrer">
+                      Open release page
+                    </a>
+                  ) : null}
+                </div>
+
+                <div className={updateSummary?.status === 'available' ? 'settingsUpdateStatus available' : 'settingsUpdateStatus'}>
+                  <div className="settingsUpdateStatusTitle">
+                    {updateSummary
+                      ? updateSummary.status === 'available'
+                        ? `Update available: ${updateSummary.latestTag}`
+                        : updateSummary.status === 'current'
+                          ? 'You are on the latest release'
+                          : 'This build is newer than the latest public release'
+                      : 'No release check has been run yet'}
+                  </div>
+                  <div className="settingsUpdateStatusMeta">
+                    {updateSummary
+                      ? `${updateSummary.releaseName} · published ${formatPublishedAt(updateSummary.publishedAt)}`
+                      : 'Run a check to read the latest GitHub release metadata.'}
+                  </div>
+                  {updateSummary?.asset ? (
+                    <div className="settingsMiniNote">
+                      Matched installer: `{updateSummary.asset.name}` ({formatBytes(updateSummary.asset.size)})
+                    </div>
+                  ) : null}
+                  {downloadProgress ? (
+                    <div className="settingsDownloadProgress">
+                      <div className="settingsDownloadProgressRow">
+                        <strong>{downloadProgress.fileName}</strong>
+                        <span>{downloadProgress.percent === null ? 'Preparing download...' : `${downloadProgress.percent.toFixed(1)}%`}</span>
+                      </div>
+                      <div className="settingsDownloadProgressBar" aria-hidden="true">
+                        <span style={{ width: `${downloadProgress.percent ?? 8}%` }} />
+                      </div>
+                      <div className="settingsUpdateStatusMeta">
+                        {formatBytes(downloadProgress.receivedBytes)} / {formatBytes(downloadProgress.totalBytes)}
+                      </div>
+                    </div>
+                  ) : null}
+                  {downloadedUpdatePath ? (
+                    <div className="settingsMiniNote">
+                      Latest download saved to `{downloadedUpdatePath}`.
+                    </div>
+                  ) : null}
+                  {updateError ? (
+                    <div className="settingsUpdateError">{updateError}</div>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="footerHint">This first version is intentionally installer-based instead of silent self-replacement, which keeps the upgrade flow reliable for unsigned or non-notarized local builds.</div>
             </div>
           </div>
         )}

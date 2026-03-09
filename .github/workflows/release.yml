@@ -27,11 +27,11 @@ jobs:
           - runner: macos-14
             arch: arm64
             script: dist:mac:arm64
-            artifact_name: assistant-desk-mac-arm64
+            artifact_name: inspiration-mac-arm64
           - runner: macos-14
             arch: x64
             script: dist:mac:x64
-            artifact_name: assistant-desk-mac-x64
+            artifact_name: inspiration-mac-x64
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
@@ -68,13 +68,13 @@ jobs:
       - name: Download arm64 artifacts
         uses: actions/download-artifact@v4
         with:
-          name: assistant-desk-mac-arm64
+          name: inspiration-mac-arm64
           path: release-artifacts/arm64
 
       - name: Download x64 artifacts
         uses: actions/download-artifact@v4
         with:
-          name: assistant-desk-mac-x64
+          name: inspiration-mac-x64
           path: release-artifacts/x64
 
       - name: Publish GitHub Release

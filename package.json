@@ -1,8 +1,8 @@
 {
-  "name": "assistant-desk",
+  "name": "inspiration",
   "private": true,
   "version": "0.1.5",
-  "description": "Desktop AI coding workspace with assistant chat, terminal, and multi-project explorer.",
+  "description": "Inspiration is a desktop AI coding workspace with chat, terminal, and multi-project explorer.",
   "author": "Zhang Chi",
   "main": "electron/main.cjs",
   "type": "module",
@@ -77,7 +77,7 @@
   },
   "build": {
     "appId": "com.zhangchi.assistantdesk",
-    "productName": "Assistant Desk",
+    "productName": "Inspiration",
     "artifactName": "${productName}-${version}-${arch}.${ext}",
     "afterSign": "scripts/notarize.cjs",
     "icon": "build/icons/icon.icns",

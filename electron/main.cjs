@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const https = require('https');
 const path = require('path');
 const fs = require('fs');
 const fsp = require('fs/promises');
@@ -25,6 +26,9 @@ const WORKSPACE_WATCH_IGNORED_NAMES = new Set([
 const WORKSPACE_WATCH_IGNORED_BASENAMES = new Set([
   '.ds_store'
 ]);
+const UPDATE_RELEASE_API_URL = 'https://api.github.com/repos/bzdzhangchi-bot/Inspiration-AIDE/releases/latest';
+const UPDATE_DOWNLOADS_SUBDIR = 'Inspiration Downloads';
+const UPDATE_REQUEST_TIMEOUT_MS = 20000;
 
 const state = {
   workspaceRoot: null,
@@ -39,6 +43,9 @@ const state = {
     nextCaptureId: 1,
     cols: 120,
     rows: 30
+  },
+  updater: {
+    activeDownload: null
   }
 };
 
@@ -61,6 +68,10 @@ function closeWorkspaceWatchers() {
 
 function emitWorkspaceEvent(payload) {
   broadcast('workspace:event', payload);
+}
+
+function emitAppUpdateEvent(payload) {
+  broadcast('app-update:event', payload);
 }
 
 function normalizeWorkspaceRoots(nextRoots) {
@@ -1193,7 +1204,7 @@ function resolveWithinWorkspace(targetPath) {
 async function writeFileAtomic(filePath, contents) {
   const dir = path.dirname(filePath);
   await fsp.mkdir(dir, { recursive: true });
-  const tmp = path.join(dir, `.assistant-desk.tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const tmp = path.join(dir, `.inspiration.tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   await fsp.writeFile(tmp, contents, 'utf8');
   await fsp.rename(tmp, filePath);
 }
@@ -1227,6 +1238,285 @@ function withTilde(targetPath) {
   const home = os.homedir();
   if (!targetPath.startsWith(home)) return targetPath;
   return `~${targetPath.slice(home.length)}`;
+}
+
+function normalizeVersionString(value) {
+  return String(value || '').trim().replace(/^v/i, '').split('-')[0];
+}
+
+function compareVersions(left, right) {
+  const leftParts = normalizeVersionString(left).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const rightParts = normalizeVersionString(right).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const length = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftPart = leftParts[index] ?? 0;
+    const rightPart = rightParts[index] ?? 0;
+    if (leftPart > rightPart) return 1;
+    if (leftPart < rightPart) return -1;
+  }
+  return 0;
+}
+
+function getAppInfo() {
+  return {
+    name: 'Inspiration',
+    version: app.getVersion(),
+    displayVersion: app.isPackaged ? app.getVersion() : `${app.getVersion()}-dev`,
+    releaseVersion: app.getVersion(),
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+    arch: process.arch,
+    downloadsPath: app.getPath('downloads')
+  };
+}
+
+function requestJson(url, redirectsRemaining = 4) {
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, {
+      headers: {
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': `Inspiration/${app.getVersion()}`
+      }
+    }, (response) => {
+      const statusCode = response.statusCode ?? 0;
+      const location = response.headers.location;
+      if (statusCode >= 300 && statusCode < 400 && location && redirectsRemaining > 0) {
+        response.resume();
+        resolve(requestJson(location, redirectsRemaining - 1));
+        return;
+      }
+
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => {
+        body += chunk;
+      });
+      response.on('end', () => {
+        if (statusCode < 200 || statusCode >= 300) {
+          reject(new Error(`Release check failed (${statusCode}): ${body.trim() || 'Unexpected response'}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(body));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+
+    request.setTimeout(UPDATE_REQUEST_TIMEOUT_MS, () => {
+      request.destroy(new Error('Release check timed out.'));
+    });
+    request.on('error', reject);
+  });
+}
+
+function pickReleaseAsset(assets, arch) {
+  const normalizedArch = arch === 'arm64' ? 'arm64' : arch === 'x64' ? 'x64' : arch;
+  const candidates = (Array.isArray(assets) ? assets : [])
+    .map((asset) => {
+      const name = String(asset?.name || '');
+      const lower = name.toLowerCase();
+      if (!name || lower.endsWith('.blockmap')) return null;
+      const extensionScore = lower.endsWith('.dmg') ? 30 : lower.endsWith('.zip') ? 20 : 0;
+      if (!extensionScore) return null;
+      let archScore = 0;
+      if (lower.includes(`-${normalizedArch}.`)) {
+        archScore = 50;
+      } else if (lower.includes('-universal.')) {
+        archScore = 35;
+      }
+      const brandScore = lower.includes('inspiration') ? 10 : lower.includes('assistant desk') || lower.includes('assistant-desk') ? 5 : 0;
+      if (!archScore && !brandScore) return null;
+      return {
+        id: asset.id,
+        name,
+        url: asset.browser_download_url,
+        size: typeof asset.size === 'number' ? asset.size : null,
+        contentType: typeof asset.content_type === 'string' ? asset.content_type : null,
+        score: archScore + extensionScore + brandScore
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => right.score - left.score);
+
+  return candidates[0] ?? null;
+}
+
+async function fetchLatestReleaseSummary() {
+  const release = await requestJson(UPDATE_RELEASE_API_URL);
+  const currentVersion = app.getVersion();
+  const latestTag = typeof release.tag_name === 'string' ? release.tag_name : '';
+  const latestVersion = normalizeVersionString(latestTag);
+  const asset = pickReleaseAsset(release.assets, process.arch);
+  const comparison = latestVersion ? compareVersions(latestVersion, currentVersion) : 0;
+  const status = comparison > 0 ? 'available' : comparison < 0 ? 'ahead' : 'current';
+
+  return {
+    currentVersion,
+    latestVersion: latestVersion || currentVersion,
+    latestTag: latestTag || `v${currentVersion}`,
+    status,
+    releaseName: typeof release.name === 'string' && release.name.trim() ? release.name.trim() : latestTag || `v${currentVersion}`,
+    htmlUrl: typeof release.html_url === 'string' ? release.html_url : '',
+    publishedAt: typeof release.published_at === 'string' ? release.published_at : null,
+    body: typeof release.body === 'string' ? release.body : '',
+    asset
+  };
+}
+
+async function createUniqueDownloadTarget(fileName) {
+  const downloadsDir = path.join(app.getPath('downloads'), UPDATE_DOWNLOADS_SUBDIR);
+  await fsp.mkdir(downloadsDir, { recursive: true });
+
+  const parsed = path.parse(fileName);
+  let candidate = path.join(downloadsDir, fileName);
+  let suffix = 1;
+  while (await pathExists(candidate)) {
+    candidate = path.join(downloadsDir, `${parsed.name}-${suffix}${parsed.ext}`);
+    suffix += 1;
+  }
+  return candidate;
+}
+
+function downloadReleaseAsset(asset, destinationPath) {
+  return new Promise((resolve, reject) => {
+    const tmpPath = `${destinationPath}.download`;
+    let settled = false;
+
+    const cleanup = async () => {
+      try {
+        await fsp.unlink(tmpPath);
+      } catch {
+        // ignore
+      }
+    };
+
+    const finalizeError = async (error) => {
+      if (settled) return;
+      settled = true;
+      await cleanup();
+      reject(error);
+    };
+
+    const request = https.get(asset.url, {
+      headers: {
+        'Accept': 'application/octet-stream',
+        'User-Agent': `Inspiration/${app.getVersion()}`
+      }
+    }, (response) => {
+      const statusCode = response.statusCode ?? 0;
+      const location = response.headers.location;
+      if (statusCode >= 300 && statusCode < 400 && location) {
+        response.resume();
+        downloadReleaseAsset({ ...asset, url: location }, destinationPath).then(resolve).catch(reject);
+        return;
+      }
+      if (statusCode < 200 || statusCode >= 300) {
+        let body = '';
+        response.setEncoding('utf8');
+        response.on('data', (chunk) => {
+          body += chunk;
+        });
+        response.on('end', () => {
+          void finalizeError(new Error(`Download failed (${statusCode}): ${body.trim() || 'Unexpected response'}`));
+        });
+        return;
+      }
+
+      const totalBytes = Number.parseInt(String(response.headers['content-length'] || ''), 10);
+      let receivedBytes = 0;
+      const fileStream = fs.createWriteStream(tmpPath);
+
+      response.on('data', (chunk) => {
+        receivedBytes += chunk.length;
+        const percent = Number.isFinite(totalBytes) && totalBytes > 0
+          ? Math.min(100, Math.round((receivedBytes / totalBytes) * 1000) / 10)
+          : null;
+        emitAppUpdateEvent({
+          type: 'download-progress',
+          receivedBytes,
+          totalBytes: Number.isFinite(totalBytes) && totalBytes > 0 ? totalBytes : null,
+          percent,
+          fileName: asset.name
+        });
+      });
+
+      fileStream.on('error', (error) => {
+        response.destroy();
+        void finalizeError(error);
+      });
+
+      response.on('error', (error) => {
+        fileStream.destroy(error);
+      });
+
+      fileStream.on('finish', async () => {
+        if (settled) return;
+        settled = true;
+        fileStream.close(async () => {
+          try {
+            await fsp.rename(tmpPath, destinationPath);
+            resolve({
+              filePath: destinationPath,
+              totalBytes: Number.isFinite(totalBytes) && totalBytes > 0 ? totalBytes : receivedBytes
+            });
+          } catch (error) {
+            await cleanup();
+            reject(error);
+          }
+        });
+      });
+
+      response.pipe(fileStream);
+    });
+
+    request.setTimeout(UPDATE_REQUEST_TIMEOUT_MS, () => {
+      request.destroy(new Error('Download timed out.'));
+    });
+
+    request.on('error', (error) => {
+      void finalizeError(error);
+    });
+  });
+}
+
+async function downloadLatestReleaseAsset() {
+  if (state.updater.activeDownload) {
+    throw new Error('A release download is already in progress.');
+  }
+
+  const release = await fetchLatestReleaseSummary();
+  if (!release.asset) {
+    throw new Error(`No compatible installer was found for ${process.arch}.`);
+  }
+  if (release.status !== 'available') {
+    throw new Error('No newer release is available.');
+  }
+
+  const destinationPath = await createUniqueDownloadTarget(release.asset.name);
+  state.updater.activeDownload = { fileName: release.asset.name, destinationPath };
+  emitAppUpdateEvent({ type: 'download-start', fileName: release.asset.name, destinationPath });
+
+  try {
+    const result = await downloadReleaseAsset(release.asset, destinationPath);
+    const openError = await shell.openPath(result.filePath);
+    shell.showItemInFolder(result.filePath);
+    emitAppUpdateEvent({
+      type: 'download-complete',
+      filePath: result.filePath,
+      fileName: release.asset.name,
+      totalBytes: result.totalBytes,
+      openError: openError || null
+    });
+    return {
+      ...release,
+      downloadedFilePath: result.filePath,
+      openError: openError || null
+    };
+  } finally {
+    state.updater.activeDownload = null;
+  }
 }
 
 async function readTextPreview(filePath, maxLines = 24) {
@@ -1370,6 +1660,10 @@ function resolveClaudeAccessiblePath(targetPath, workspaceRoot) {
 }
 
 function registerIpc() {
+  ipcMain.handle('app:getInfo', async () => getAppInfo());
+  ipcMain.handle('app:checkForUpdates', async () => await fetchLatestReleaseSummary());
+  ipcMain.handle('app:downloadLatestUpdate', async () => await downloadLatestReleaseAsset());
+
   ipcMain.handle('workspace:getRoot', async () => state.workspaceRoot);
   ipcMain.handle('workspace:getRoots', async () => [...state.workspaceRoots]);
 

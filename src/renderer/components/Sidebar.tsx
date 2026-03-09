@@ -12,8 +12,11 @@ export function Sidebar(props: {
   return (
     <div className="sidebar">
       <div className="sidebarHeader">
-        <button type="button" className="sidebarBrand" title="assistant-desk" aria-label="assistant-desk">
-          AD
+        <button type="button" className="sidebarBrand" title="Inspiration" aria-label="Inspiration">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 2.8 13.9 10.1 21.2 12 13.9 13.9 12 21.2 10.1 13.9 2.8 12 10.1 10.1 12 2.8Z" />
+            <path d="M18.2 4.4 18.95 7.05 21.6 7.8 18.95 8.55 18.2 11.2 17.45 8.55 14.8 7.8 17.45 7.05 18.2 4.4Z" />
+          </svg>
         </button>
       </div>
 

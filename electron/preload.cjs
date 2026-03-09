@@ -1,6 +1,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('assistantDesk', {
+  getAppInfo: () => ipcRenderer.invoke('app:getInfo'),
+  checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
+  downloadLatestUpdate: () => ipcRenderer.invoke('app:downloadLatestUpdate'),
   selectWorkspaceFolder: () => ipcRenderer.invoke('workspace:selectFolder'),
   getWorkspaceRoot: () => ipcRenderer.invoke('workspace:getRoot'),
   getWorkspaceRoots: () => ipcRenderer.invoke('workspace:getRoots'),
@@ -42,5 +45,10 @@ contextBridge.exposeInMainWorld('assistantDesk', {
     const wrapped = (_event, payload) => listener(payload);
     ipcRenderer.on('workspace:event', wrapped);
     return () => ipcRenderer.removeListener('workspace:event', wrapped);
+  },
+  onAppUpdateEvent: (listener) => {
+    const wrapped = (_event, payload) => listener(payload);
+    ipcRenderer.on('app-update:event', wrapped);
+    return () => ipcRenderer.removeListener('app-update:event', wrapped);
   }
 });

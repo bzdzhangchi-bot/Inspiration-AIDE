@@ -283,10 +283,10 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, {
         const created = await terminalClient.createSession(undefined, undefined);
         if (created === null) return null;
         activeAgentSessionIdRef.current = created;
-        appendLocalNotice(created, `[assistant-desk] Running agent command: ${command}`);
+        appendLocalNotice(created, `[Inspiration] Running agent command: ${command}`);
         try {
           const result = await terminalClient.runCommandWithCapture(command, timeoutMs, created);
-          appendLocalNotice(created, `[assistant-desk] Command finished with exit code ${result.exitCode ?? 'null'}`);
+          appendLocalNotice(created, `[Inspiration] Command finished with exit code ${result.exitCode ?? 'null'}`);
           return result;
         } finally {
           if (activeAgentSessionIdRef.current === created) {
@@ -295,10 +295,10 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, {
         }
       }
       activeAgentSessionIdRef.current = activeSession.id;
-      appendLocalNotice(activeSession.id, `[assistant-desk] Running agent command: ${command}`);
+      appendLocalNotice(activeSession.id, `[Inspiration] Running agent command: ${command}`);
       try {
         const result = await terminalClient.runCommandWithCapture(command, timeoutMs, activeSession.id);
-        appendLocalNotice(activeSession.id, `[assistant-desk] Command finished with exit code ${result.exitCode ?? 'null'}`);
+        appendLocalNotice(activeSession.id, `[Inspiration] Command finished with exit code ${result.exitCode ?? 'null'}`);
         return result;
       } finally {
         if (activeAgentSessionIdRef.current === activeSession.id) {
@@ -309,7 +309,7 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, {
     async interruptAgentCommand() {
       const sessionId = activeAgentSessionIdRef.current ?? activeSessionIdRef.current;
       if (sessionId === null) return;
-      appendLocalNotice(sessionId, '[assistant-desk] Interrupt requested from chat');
+      appendLocalNotice(sessionId, '[Inspiration] Interrupt requested from chat');
       await terminalClient.interrupt(sessionId);
     },
     focusActiveSession() {

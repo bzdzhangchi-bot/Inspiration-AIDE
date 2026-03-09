@@ -1,4 +1,4 @@
-# Assistant Desk <version>
+# Inspiration <version>
 
 Use this file as the source template for future release notes.
 
@@ -14,11 +14,11 @@ Suggested workflow:
 ## Bilingual Template
 
 ```md
-# Assistant Desk <version>
+# Inspiration <version>
 
 ## English
 
-Assistant Desk <version> is a focused <headline> release for <scope>, with <secondary-summary>.
+Inspiration <version> is a focused <headline> release for <scope>, with <secondary-summary>.
 
 ### Highlights
 
@@ -29,10 +29,10 @@ Assistant Desk <version> is a focused <headline> release for <scope>, with <seco
 
 ### Included artifacts
 
-- macOS arm64 DMG: `Assistant.Desk-<version>-arm64.dmg`
-- macOS arm64 ZIP: `Assistant.Desk-<version>-arm64.zip`
-- macOS x64 DMG: `Assistant.Desk-<version>-x64.dmg`
-- macOS x64 ZIP: `Assistant.Desk-<version>-x64.zip`
+- macOS arm64 DMG: `Inspiration-<version>-arm64.dmg`
+- macOS arm64 ZIP: `Inspiration-<version>-arm64.zip`
+- macOS x64 DMG: `Inspiration-<version>-x64.dmg`
+- macOS x64 ZIP: `Inspiration-<version>-x64.zip`
 
 ### Notes
 
@@ -44,7 +44,7 @@ Assistant Desk <version> is a focused <headline> release for <scope>, with <seco
 ### Install
 
 1. Download the latest `.dmg` from Releases.
-2. Open the disk image and drag Assistant Desk into Applications.
+2. Open the disk image and drag Inspiration into Applications.
 3. If macOS blocks launch, right-click the app and choose Open.
 
 ### Known limitations
@@ -57,7 +57,7 @@ Assistant Desk <version> is a focused <headline> release for <scope>, with <seco
 
 ## 中文
 
-Assistant Desk <version> 是一次聚焦于<headline>的更新，同时补充了<secondary-summary>。
+Inspiration <version> 是一次聚焦于<headline>的更新，同时补充了<secondary-summary>。
 
 ### 版本亮点
 
@@ -68,10 +68,10 @@ Assistant Desk <version> 是一次聚焦于<headline>的更新，同时补充了
 
 ### 发布产物
 
-- macOS arm64 DMG：`Assistant.Desk-<version>-arm64.dmg`
-- macOS arm64 ZIP：`Assistant.Desk-<version>-arm64.zip`
-- macOS x64 DMG：`Assistant.Desk-<version>-x64.dmg`
-- macOS x64 ZIP：`Assistant.Desk-<version>-x64.zip`
+- macOS arm64 DMG：`Inspiration-<version>-arm64.dmg`
+- macOS arm64 ZIP：`Inspiration-<version>-arm64.zip`
+- macOS x64 DMG：`Inspiration-<version>-x64.dmg`
+- macOS x64 ZIP：`Inspiration-<version>-x64.zip`
 
 ### 说明
 
@@ -83,7 +83,7 @@ Assistant Desk <version> 是一次聚焦于<headline>的更新，同时补充了
 ### 安装
 
 1. 从 Releases 下载最新的 `.dmg`。
-2. 打开磁盘镜像，将 Assistant Desk 拖入 Applications。
+2. 打开磁盘镜像，将 Inspiration 拖入 Applications。
 3. 如果 macOS 阻止打开，可右键应用并选择“打开”。
 
 ### 当前限制

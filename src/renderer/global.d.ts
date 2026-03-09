@@ -88,8 +88,48 @@ type GitCommitResult = {
 };
 
 declare global {
+  type AppInfo = {
+    name: string;
+    version: string;
+    displayVersion: string;
+    releaseVersion: string;
+    isPackaged: boolean;
+    platform: string;
+    arch: string;
+    downloadsPath: string;
+  };
+
+  type AppUpdateSummary = {
+    currentVersion: string;
+    latestVersion: string;
+    latestTag: string;
+    status: 'available' | 'current' | 'ahead';
+    releaseName: string;
+    htmlUrl: string;
+    publishedAt: string | null;
+    body: string;
+    asset: {
+      id: number;
+      name: string;
+      url: string;
+      size: number | null;
+      contentType: string | null;
+      score: number;
+    } | null;
+    downloadedFilePath?: string;
+    openError?: string | null;
+  };
+
+  type AppUpdateEvent =
+    | { type: 'download-start'; fileName: string; destinationPath: string }
+    | { type: 'download-progress'; fileName: string; receivedBytes: number; totalBytes: number | null; percent: number | null }
+    | { type: 'download-complete'; fileName: string; filePath: string; totalBytes: number; openError: string | null };
+
   interface Window {
     assistantDesk: {
+      getAppInfo(): Promise<AppInfo>;
+      checkForUpdates(): Promise<AppUpdateSummary>;
+      downloadLatestUpdate(): Promise<AppUpdateSummary>;
       selectWorkspaceFolder(): Promise<string | null>;
       getWorkspaceRoot(): Promise<string | null>;
       getWorkspaceRoots(): Promise<string[]>;
@@ -124,6 +164,7 @@ declare global {
       interruptTerminal(sessionId?: number): Promise<void>;
       onTerminalEvent(listener: (event: TerminalEvent) => void): () => void;
       onWorkspaceEvent(listener: (event: WorkspaceEvent) => void): () => void;
+      onAppUpdateEvent(listener: (event: AppUpdateEvent) => void): () => void;
     };
   }
 }

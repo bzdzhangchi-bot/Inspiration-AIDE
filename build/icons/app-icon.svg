@@ -1,20 +1,7 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect width="1024" height="1024" rx="232" fill="#10151E"/>
-  <rect x="84" y="84" width="856" height="856" rx="192" fill="url(#bg)"/>
-  <path d="M250 284C250 246.444 280.444 216 318 216H706C743.556 216 774 246.444 774 284V740C774 777.556 743.556 808 706 808H318C280.444 808 250 777.556 250 740V284Z" fill="#0E131B" stroke="rgba(255,255,255,0.08)" stroke-width="8"/>
-  <path d="M328 338C328 317.013 345.013 300 366 300H658C678.987 300 696 317.013 696 338V402H328V338Z" fill="#162130"/>
-  <circle cx="384" cy="351" r="14" fill="#F26B5B"/>
-  <circle cx="430" cy="351" r="14" fill="#F0B04B"/>
-  <circle cx="476" cy="351" r="14" fill="#5CC489"/>
-  <path d="M328 402H696V686C696 706.987 678.987 724 658 724H366C345.013 724 328 706.987 328 686V402Z" fill="#0D141D"/>
-  <path d="M412 500L492 580L412 660" stroke="#7BC7FF" stroke-width="42" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M568 662H650" stroke="#F5F7FA" stroke-width="42" stroke-linecap="round"/>
-  <rect x="354" y="444" width="316" height="236" rx="40" stroke="rgba(123,199,255,0.14)" stroke-width="8"/>
-  <defs>
-    <linearGradient id="bg" x1="148" y1="110" x2="900" y2="924" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#203047"/>
-      <stop offset="0.5" stop-color="#16212E"/>
-      <stop offset="1" stop-color="#0E141B"/>
-    </linearGradient>
-  </defs>
+  <rect width="1024" height="1024" rx="232" fill="#FFFFFF"/>
+  <rect x="84" y="84" width="856" height="856" rx="192" fill="#FFFFFF" stroke="#E7E9EE" stroke-width="10"/>
+  <path d="M512 212L563.486 408.514L760 460L563.486 511.486L512 708L460.514 511.486L264 460L460.514 408.514L512 212Z" fill="#111318"/>
+  <path d="M692 280L710.125 349.875L780 368L710.125 386.125L692 456L673.875 386.125L604 368L673.875 349.875L692 280Z" fill="#111318"/>
+  <path d="M336 596L351.625 654.375L410 670L351.625 685.625L336 744L320.375 685.625L262 670L320.375 654.375L336 596Z" fill="#111318"/>
 </svg>

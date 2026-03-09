@@ -2955,7 +2955,7 @@ export function ChatPage(props: {
           >
             <div className="chatHeader">
               <div className="chatHeaderTitleRow">
-                <div className="cardTitle">Assistant</div>
+                <div className="cardTitle">Inspiration</div>
                 <div className={`chatStatus ${currentConnectionState?.status ?? 'checking'}`} title={currentConnectionState?.message ?? connectionHint}>
                   <span className="chatStatusDot" />
                   <span>{currentConnectionState ? currentConnectionState.status === 'ok' ? 'Connected' : currentConnectionState.status === 'error' ? 'Issue' : 'Checking' : 'Checking'}</span>
@@ -2970,7 +2970,7 @@ export function ChatPage(props: {
                       </option>
                     ))}
                   </select>
-                  <div className="assistantLayoutToggle" role="tablist" aria-label="Assistant layout mode">
+                  <div className="assistantLayoutToggle" role="tablist" aria-label="Inspiration layout mode">
                     <button type="button" className={layoutMode === 'collab' ? 'active' : ''} onClick={() => setLayoutMode('collab')} aria-pressed={layoutMode === 'collab'}>
                       Collaborate
                     </button>
@@ -3061,7 +3061,7 @@ export function ChatPage(props: {
               </div>
             ) : null}
 
-            <aside className="assistantSideBar" aria-label="Assistant tools">
+            <aside className="assistantSideBar" aria-label="Inspiration tools">
               <button
                 type="button"
                 className={`assistantSideBarItem ${historyDrawerOpen ? 'active' : ''}`}
