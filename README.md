@@ -18,11 +18,11 @@ Built with **Electron + Vite + React + TypeScript**.
 
 ## Latest release
 
-Current stable release: **v0.1.5**
+Current stable release: **v0.1.6**
 
-- Added Collaborate and Immerse assistant layouts so you can switch between side-by-side workspace flow and assistant-first focus mode.
-- Improved assistant chat ergonomics with clearer left/right message alignment, better profile controls, and a more balanced composer.
-- Fixed Claude CLI chat syncing so runtime replies surface back into ChatPage more reliably.
+- Renamed the user-facing app to `Inspiration` and refreshed the shipped icon with a new minimal visual mark.
+- Added an in-app updater flow under `Settings > App` so users can check the latest release and download the correct installer without going back to GitHub manually.
+- Clarified version display for development builds so local work-in-progress windows no longer pretend to be a published release.
 
 ## Who is this for?
 
