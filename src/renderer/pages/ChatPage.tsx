@@ -680,20 +680,6 @@ const CLI_NOISE_LINE_PATTERNS = [
 ];
 
 const CLI_VISUAL_NOISE_CHARS = /[·•●◦○✳✶✻✽✢…⋯⠁-⣿]/g;
-const CLI_PROMPT_PREFIX_PATTERN = /^[❯>$#▪•*]+\s*/u;
-const CLI_STARTUP_NOISE_KEYS = [
-  'recentactivity',
-  'norecentactivity',
-  'apiusagebilling',
-  'debugmodeenabled',
-  'loggingto',
-  'modeltotry',
-  'tipsforgettingstarted',
-  'welcomeback',
-  'claudecodev',
-  'mediummodel',
-  '/inittocreateaclaude.mdfilewithinstructionsforclaude'
-];
 
 function isCliVisualNoiseLine(value: string) {
   const line = value.trim();
@@ -748,140 +734,6 @@ function normalizeCliLines(value: string) {
     .filter((line) => line.length > 0)
     .filter((line) => !isCliVisualNoiseLine(line))
     .filter((line) => !CLI_NOISE_LINE_PATTERNS.some((pattern) => pattern.test(line)));
-}
-
-function normalizeCliSingleLine(value: string) {
-  const lines = normalizeCliLines(value);
-  if (!lines.length) return '';
-  return lines.join(' ').replace(/\s+/g, ' ').trim();
-}
-
-function toCliComparableText(value: string) {
-  return value
-    .replace(CLI_PROMPT_PREFIX_PATTERN, '')
-    .replace(/\s+/g, '')
-    .trim()
-    .toLowerCase();
-}
-
-function isCliPromptEchoLine(line: string, promptText: string) {
-  const promptComparable = toCliComparableText(promptText);
-  if (!promptComparable) return false;
-  return toCliComparableText(line) === promptComparable;
-}
-
-function isCliStartupNoiseLine(value: string) {
-  const compact = value.replace(/\s+/g, '').toLowerCase();
-  if (!compact) return false;
-  return CLI_STARTUP_NOISE_KEYS.some((key) => compact.includes(key));
-}
-
-function toCompactComparableText(value: string) {
-  return value.replace(/\s+/g, '').trim().toLowerCase();
-}
-
-function getWorkspacePathVariants(workspaceRoot: string | null) {
-  if (!workspaceRoot) return [] as string[];
-
-  const normalizedRoot = workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '');
-  const variants = [normalizedRoot];
-  const homeMatch = /^(\/Users\/[^/]+)(\/.*)$/.exec(normalizedRoot);
-  if (homeMatch) {
-    variants.push(`~${homeMatch[2]}`);
-  }
-  return variants;
-}
-
-function isCliWorkspaceBannerLine(line: string, workspaceRoot: string | null) {
-  const compactLine = toCompactComparableText(line);
-  if (!compactLine) return false;
-  return getWorkspacePathVariants(workspaceRoot)
-    .map(toCompactComparableText)
-    .some((variant) => variant === compactLine);
-}
-
-function isCliModelBannerLine(line: string) {
-  const compactLine = toCompactComparableText(line);
-  return /^(small|medium|large|opus|sonnet|haiku|gpt[-.0-9a-z]*)\/model$/i.test(compactLine);
-}
-
-function isCliAnswerLikeLine(line: string) {
-  const trimmed = line.trim();
-  if (!trimmed) return false;
-
-  const compact = toCompactComparableText(trimmed);
-  if (!compact) return false;
-
-  const cjkChars = trimmed.match(/[\u3400-\u9fff]/g) ?? [];
-  if (cjkChars.length >= 2) {
-    return true;
-  }
-
-  const latinWords = trimmed.match(/[A-Za-z]+(?:'[A-Za-z]+)?/g) ?? [];
-  if (latinWords.length >= 3) {
-    return true;
-  }
-
-  if (latinWords.length >= 1 && /[.!?。！？：:]/.test(trimmed) && compact.length >= 6) {
-    return true;
-  }
-
-  if (/^[-*]\s+/.test(trimmed) && compact.length >= 4) {
-    return true;
-  }
-
-  if (/^\d+\.\s+/.test(trimmed) && compact.length >= 4) {
-    return true;
-  }
-
-  return false;
-}
-
-function hasCliAnswerLikeContent(value: string) {
-  return normalizeCliLines(value).some((line) => isCliAnswerLikeLine(line));
-}
-
-function sliceCliLinesAfterPromptEcho(lines: string[], promptText: string) {
-  const lastPromptIndex = lines.reduce((foundIndex, line, index) => (
-    isCliPromptEchoLine(line, promptText) ? index : foundIndex
-  ), -1);
-
-  return lastPromptIndex >= 0 ? lines.slice(lastPromptIndex + 1) : lines;
-}
-
-function isMeaningfulClaudeReplyLine(value: string, workspaceRoot: string | null) {
-  const line = value.trim();
-  if (!line) return false;
-  if (isCliVisualNoiseLine(line)) return false;
-  if (isCliStartupNoiseLine(line)) return false;
-  if (isCliWorkspaceBannerLine(line, workspaceRoot)) return false;
-  if (isCliModelBannerLine(line)) return false;
-  if (line.startsWith('[user] ')) return false;
-  if (/^\[debug\]/i.test(line)) return false;
-  if (/^user prompt sent:/i.test(line)) return false;
-  if (/^interrupt requested/i.test(line)) return false;
-  if (/^started claude code session$/i.test(line)) return false;
-  if (/^restarted claude code session$/i.test(line)) return false;
-  if (/^restored claude runtime state/i.test(line)) return false;
-  return !CLI_NOISE_LINE_PATTERNS.some((pattern) => pattern.test(line));
-}
-
-function extractClaudeCliTurnTail(rawTail: string, turnStartSnapshot: string) {
-  if (!turnStartSnapshot) return rawTail;
-  if (rawTail.startsWith(turnStartSnapshot)) {
-    return rawTail.slice(turnStartSnapshot.length);
-  }
-
-  const lastUserMarker = rawTail.lastIndexOf('\n[user] ');
-  if (lastUserMarker >= 0) {
-    return rawTail.slice(lastUserMarker);
-  }
-
-  return rawTail;
-}
-
-function dedupeAdjacentLines(lines: string[]) {
-  return lines.filter((line, index, all) => index === 0 || line !== all[index - 1]);
 }
 
 function joinWorkspacePath(base: string, name: string) {
@@ -993,34 +845,6 @@ function extractRuntimeSkillHints(debugLogTail: string): ClaudeSkillItem[] {
   return [...map.values()].slice(-4);
 }
 
-function buildClaudeCliReplyFromRuntime(state: ClaudeCodeRuntimeState, turnStartedAt: number, turnStartSnapshot: string, promptText: string) {
-  const normalizedPrompt = normalizeCliSingleLine(promptText).toLowerCase();
-  const rawTurnLines = sliceCliLinesAfterPromptEcho(
-    normalizeCliLines(extractClaudeCliTurnTail(state.rawTail, turnStartSnapshot)),
-    promptText
-  )
-    .filter((line) => isMeaningfulClaudeReplyLine(line, state.workspaceRoot))
-    .filter((line) => !isCliPromptEchoLine(line, promptText))
-    .filter((line) => !normalizedPrompt || line.toLowerCase() !== normalizedPrompt)
-    .slice(-24);
-
-  const modelLines = dedupeAdjacentLines(rawTurnLines);
-  if (modelLines.length) {
-    return modelLines.join('\n');
-  }
-
-  const eventLines = state.events
-    .filter((event) => event.createdAt >= turnStartedAt)
-    .filter((event) => event.kind === 'message' || event.kind === 'question' || event.kind === 'approval' || event.kind === 'plan')
-    .flatMap((event) => normalizeCliLines(event.text.replace(/^\[debug\]\s*/i, '')))
-    .filter((line) => !isCliPromptEchoLine(line, promptText))
-    .filter((line) => isMeaningfulClaudeReplyLine(line, state.workspaceRoot))
-    .filter((line) => !normalizedPrompt || line.toLowerCase() !== normalizedPrompt)
-    .slice(-16);
-
-  return dedupeAdjacentLines(eventLines).join('\n');
-}
-
 function formatTimestamp(value: number) {
   return new Date(value).toLocaleString();
 }
@@ -1036,9 +860,10 @@ export function ChatPage(props: {
   onRunCommandInTerminal: (command: string, timeoutMs?: number) => Promise<TerminalCommandResult>;
   onInterruptAgentRun: () => Promise<void>;
   onSendPromptToClaudeCli: (prompt: string) => Promise<void>;
+  onFocusClaudeCliTerminal: () => Promise<void>;
   onInterruptClaudeCli: () => Promise<void>;
 }) {
-  const { settings, profiles, activeProfileId, onOpenGitPage, onSelectProfile, isDrawerOpen, onToggleDrawer, onRunCommandInTerminal, onInterruptAgentRun, onSendPromptToClaudeCli } = props;
+  const { settings, profiles, activeProfileId, onOpenGitPage, onSelectProfile, isDrawerOpen, onToggleDrawer, onRunCommandInTerminal, onInterruptAgentRun, onSendPromptToClaudeCli, onFocusClaudeCliTerminal, onInterruptClaudeCli } = props;
 
   const workspacePanelRef = useRef<WorkspacePanelHandle | null>(null);
   const drawerWidthRef = useRef(420);
@@ -1080,6 +905,7 @@ export function ChatPage(props: {
   const [agentTerminalText, setAgentTerminalText] = useState('');
   const [agentActiveCommand, setAgentActiveCommand] = useState<string | null>(null);
   const [claudeRuntimeState, setClaudeRuntimeState] = useState<ClaudeCodeRuntimeState>(INITIAL_CLAUDE_RUNTIME_STATE);
+  const [claudeCliHandoffNotice, setClaudeCliHandoffNotice] = useState<{ kind: 'info' | 'error'; text: string } | null>(null);
   const [claudeCliMinimalMode, setClaudeCliMinimalMode] = useState(true);
   const [showClaudeCliDetails, setShowClaudeCliDetails] = useState(false);
   const [workspaceSkills, setWorkspaceSkills] = useState<ClaudeSkillItem[]>([]);
@@ -1114,14 +940,6 @@ export function ChatPage(props: {
   const agentRunActiveRef = useRef(false);
   const pendingAgentQuestionResolveRef = useRef<((answer: string) => void) | null>(null);
   const pendingAgentQuestionRejectRef = useRef<((error: Error) => void) | null>(null);
-  const claudeCliTurnStartedAtRef = useRef<number | null>(null);
-  const claudeCliPendingReplyRef = useRef(false);
-  const claudeCliTurnRawTailSnapshotRef = useRef('');
-  const claudeCliPromptTextRef = useRef('');
-  const claudeCliIdleTimerRef = useRef<number | null>(null);
-  const claudeCliSawVisibleReplyRef = useRef(false);
-  const claudeCliBufferedReplyRef = useRef('');
-  const lastMirroredTerminalInputRef = useRef<{ text: string; at: number } | null>(null);
   const threadPersistTimerRef = useRef<number | null>(null);
   const pendingThreadPersistRef = useRef<{ profileId: string; messages: Msg[]; updatedAt: number } | null>(null);
   const isComposingRef = useRef(false);
@@ -1174,22 +992,6 @@ export function ChatPage(props: {
     if (!pending || pending.profileId !== profileId) return;
     pendingThreadPersistRef.current = null;
     clearThreadPersistTimer();
-  }
-
-  function clearClaudeCliIdleTimer() {
-    if (claudeCliIdleTimerRef.current === null) return;
-    window.clearTimeout(claudeCliIdleTimerRef.current);
-    claudeCliIdleTimerRef.current = null;
-  }
-
-  function resetClaudeCliTurnTracking() {
-    clearClaudeCliIdleTimer();
-    claudeCliTurnStartedAtRef.current = null;
-    claudeCliPendingReplyRef.current = false;
-    claudeCliTurnRawTailSnapshotRef.current = '';
-    claudeCliPromptTextRef.current = '';
-    claudeCliSawVisibleReplyRef.current = false;
-    claudeCliBufferedReplyRef.current = '';
   }
 
   function clearProfileSwitchNoticeTimer() {
@@ -1269,16 +1071,6 @@ export function ChatPage(props: {
     });
   }, [profiles]);
 
-  function beginClaudeCliTurn(promptText: string) {
-    clearClaudeCliIdleTimer();
-    claudeCliTurnStartedAtRef.current = Date.now();
-    claudeCliPendingReplyRef.current = true;
-    claudeCliTurnRawTailSnapshotRef.current = claudeRuntimeState.rawTail;
-    claudeCliPromptTextRef.current = promptText;
-    claudeCliSawVisibleReplyRef.current = false;
-    claudeCliBufferedReplyRef.current = '';
-  }
-
   const messages = threadsByProfile[activeProfileId] ?? EMPTY_THREAD;
   const activeThreadUpdatedAt = threadUpdatedAtByProfile[activeProfileId] ?? 0;
   const isClaudeCliMode = settings.interactionMode === 'claude_cli';
@@ -1301,7 +1093,6 @@ export function ChatPage(props: {
       activeStreamRef.current = null;
       agentRunActiveRef.current = false;
       agentCancelRequestedRef.current = true;
-      clearClaudeCliIdleTimer();
       pendingAgentQuestionRejectRef.current?.(new Error('Agent run cancelled'));
     };
   }, []);
@@ -1317,8 +1108,7 @@ export function ChatPage(props: {
     setPendingAgentQuestion(null);
     pendingAgentQuestionResolveRef.current = null;
     pendingAgentQuestionRejectRef.current = null;
-    resetClaudeCliTurnTracking();
-    lastMirroredTerminalInputRef.current = null;
+    setClaudeCliHandoffNotice(null);
     setInspectorDrawerOpen(false);
     setInspectorSection('overview');
     setHistoryDrawerOpen(false);
@@ -1361,96 +1151,6 @@ export function ChatPage(props: {
       off();
     };
   }, [settings.interactionMode]);
-
-  useEffect(() => {
-    if (settings.interactionMode !== 'claude_cli') {
-      lastMirroredTerminalInputRef.current = null;
-      return;
-    }
-
-    const off = terminalClient.onEvent((event: TerminalEvent) => {
-      if (event.type !== 'input-line') return;
-      if (event.source !== 'terminal') return;
-      if (!claudeRuntimeState.sessionId || event.sessionId !== claudeRuntimeState.sessionId) return;
-
-      const text = normalizeCliSingleLine(event.text);
-      if (!text) return;
-
-      const now = Date.now();
-      const last = lastMirroredTerminalInputRef.current;
-      if (last && last.text === text && now - last.at < 2500) {
-        return;
-      }
-      lastMirroredTerminalInputRef.current = { text, at: now };
-
-      beginClaudeCliTurn(text);
-      setCurrentMessages((prev) => [...prev, { role: 'user', content: text }, { role: 'assistant', content: 'Claude is processing your request...' }]);
-    });
-
-    return () => {
-      off();
-    };
-  }, [claudeRuntimeState.sessionId, settings.interactionMode]);
-
-  useEffect(() => {
-    if (settings.interactionMode !== 'claude_cli') {
-      resetClaudeCliTurnTracking();
-      return;
-    }
-    if (!claudeCliPendingReplyRef.current) return;
-    const startedAt = claudeCliTurnStartedAtRef.current;
-    if (!startedAt) return;
-
-    const nextContent = buildClaudeCliReplyFromRuntime(
-      claudeRuntimeState,
-      startedAt,
-      claudeCliTurnRawTailSnapshotRef.current,
-      claudeCliPromptTextRef.current
-    );
-    const hasAnswerLikeContent = nextContent ? hasCliAnswerLikeContent(nextContent) : false;
-    if (nextContent && hasAnswerLikeContent) {
-      claudeCliSawVisibleReplyRef.current = true;
-      claudeCliBufferedReplyRef.current = nextContent;
-      setCurrentMessages((prev) => {
-        if (prev.length === 0) return prev;
-        const lastIndex = prev.length - 1;
-        const last = prev[lastIndex];
-        if (last.role !== 'assistant') {
-          return [...prev, { role: 'assistant', content: nextContent }];
-        }
-        if (last.content === nextContent) {
-          return prev;
-        }
-        const next = [...prev];
-        next[lastIndex] = { role: 'assistant', content: nextContent };
-        return next;
-      });
-    }
-
-    if (!claudeCliSawVisibleReplyRef.current) return;
-
-    clearClaudeCliIdleTimer();
-    claudeCliIdleTimerRef.current = window.setTimeout(() => {
-      const finalReply = claudeCliBufferedReplyRef.current.trim();
-      if (finalReply && hasCliAnswerLikeContent(finalReply)) {
-        setCurrentMessages((prev) => {
-          if (prev.length === 0) return prev;
-          const lastIndex = prev.length - 1;
-          const last = prev[lastIndex];
-          if (last.role !== 'assistant') {
-            return [...prev, { role: 'assistant', content: finalReply }];
-          }
-          if (last.content === finalReply) {
-            return prev;
-          }
-          const next = [...prev];
-          next[lastIndex] = { role: 'assistant', content: finalReply };
-          return next;
-        });
-      }
-      resetClaudeCliTurnTracking();
-    }, hasAnswerLikeContent ? 900 : 1400);
-  }, [claudeRuntimeState.rawTail, claudeRuntimeState.events, settings.interactionMode]);
 
   useEffect(() => {
     if (settings.interactionMode !== 'claude_cli' && settings.interactionMode !== 'claude_code') {
@@ -2541,12 +2241,16 @@ export function ChatPage(props: {
 
     if (settings.interactionMode === 'claude_cli') {
       try {
-        beginClaudeCliTurn(outgoingText);
-        setCurrentMessages([...messages, { role: 'user', content: outgoingText }, { role: 'assistant', content: 'Claude is processing your request...' }]);
+        setClaudeCliHandoffNotice({
+          kind: 'info',
+          text: `Prompt sent to Claude CLI. Continue in Terminal below.${outgoingText ? ` Last prompt: ${previewText(outgoingText, 96)}` : ''}`
+        });
         await onSendPromptToClaudeCli(outgoingText);
       } catch (error) {
-        resetClaudeCliTurnTracking();
-        setCurrentMessages([...messages, { role: 'user', content: outgoingText }, { role: 'assistant', content: `Error: ${error instanceof Error ? error.message : 'Failed to send prompt to Claude CLI'}` }]);
+        setClaudeCliHandoffNotice({
+          kind: 'error',
+          text: error instanceof Error ? error.message : 'Failed to send prompt to Claude CLI'
+        });
       } finally {
         setIsStreaming(false);
       }
@@ -2798,6 +2502,18 @@ export function ChatPage(props: {
   const inspectorSubtitle = isNativeAgentMode
     ? 'Inspect Native Agent memory, assembled model inputs, and recent run activity.'
     : 'Unified runtime, memory, and skills view for the current Claude CLI workspace.';
+  const claudeCliRuntimeLabel = claudeRuntimeState.connected
+    ? claudeRuntimeState.running
+      ? 'Claude CLI is running in Terminal'
+      : 'Claude CLI session is ready in Terminal'
+    : 'Claude CLI session not connected';
+  const claudeCliWorkspaceLabel = claudeRuntimeState.workspaceRoot ?? workspaceContext.workspaceRoot ?? 'No workspace selected';
+  const claudeCliSignalItems = [
+    claudeRuntimeState.pendingApproval ? `Approval needed: ${claudeRuntimeState.pendingApproval}` : null,
+    claudeRuntimeState.pendingQuestion ? `Question pending: ${claudeRuntimeState.pendingQuestion}` : null,
+    claudeRuntimeState.lastPlan.length ? `Latest plan: ${claudeRuntimeState.lastPlan.slice(0, 2).join(' · ')}` : null,
+    claudeRuntimeState.diffDetected ? 'Recent terminal output included diff markers.' : null
+  ].filter((item): item is string => Boolean(item));
 
   async function previewInspectorFile(item: ClaudeInspectorFile) {
     const workspaceRoot = claudeRuntimeState.workspaceRoot || workspaceContext.workspaceRoot || null;
@@ -3033,8 +2749,50 @@ export function ChatPage(props: {
                 shouldStickToBottomRef.current = distanceFromBottom < 24;
               }}
             >
-              {messages.length === 0 ? (
-                <div className="empty">{settings.interactionMode === 'claude_cli' ? 'Send a prompt to start or continue real Claude CLI. The conversation will update directly in this chat.' : settings.interactionMode === 'claude_code' ? 'Start a persistent native-agent session. This profile keeps its own running conversation.' : 'Send a message to start.'}</div>
+              {isClaudeCliMode ? (
+                <div className="claudeCliHandoffPanel">
+                  <div className="claudeCliHandoffHeader">
+                    <div>
+                      <div className="claudeCliHandoffTitle">Claude CLI runs in Terminal</div>
+                      <div className="claudeCliHandoffMeta">{claudeCliRuntimeLabel}</div>
+                    </div>
+                    <div className="claudeCliHandoffActions">
+                      <button type="button" className="secondaryButton" onClick={() => void onFocusClaudeCliTerminal()}>
+                        Focus Terminal
+                      </button>
+                      <button type="button" className="secondaryButton" onClick={() => void onInterruptClaudeCli()} disabled={!claudeRuntimeState.running}>
+                        Interrupt
+                      </button>
+                    </div>
+                  </div>
+                  <div className="claudeCliHandoffHint">
+                    Send prompts here, then continue the real interaction in the Terminal panel. Chat mirroring is disabled in Claude CLI mode.
+                  </div>
+                  <div className="claudeCliHandoffGrid">
+                    <div className="claudeCliHandoffCard">
+                      <div className="claudeCliHandoffLabel">Workspace</div>
+                      <div className="claudeCliHandoffValue">{claudeCliWorkspaceLabel}</div>
+                    </div>
+                    <div className="claudeCliHandoffCard">
+                      <div className="claudeCliHandoffLabel">Runtime</div>
+                      <div className="claudeCliHandoffValue">{claudeRuntimeState.sessionId ? `Session #${claudeRuntimeState.sessionId}` : 'Waiting for Claude CLI session'}</div>
+                    </div>
+                  </div>
+                  {claudeCliHandoffNotice ? (
+                    <div className={`chatHeaderNotice ${claudeCliHandoffNotice.kind === 'error' ? 'error' : 'info'}`}>{claudeCliHandoffNotice.text}</div>
+                  ) : null}
+                  {claudeCliSignalItems.length ? (
+                    <div className="claudeCliSignalList">
+                      {claudeCliSignalItems.map((item) => (
+                        <div key={item} className="claudeCliSignalItem">{item}</div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="empty">Send a prompt to start or continue Claude CLI, then keep working in Terminal.</div>
+                  )}
+                </div>
+              ) : messages.length === 0 ? (
+                <div className="empty">{settings.interactionMode === 'claude_code' ? 'Start a persistent native-agent session. This profile keeps its own running conversation.' : 'Send a message to start.'}</div>
               ) : (
                 <div>
                   {settings.interactionMode === 'claude_code' ? (

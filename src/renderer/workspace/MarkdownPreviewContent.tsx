@@ -38,14 +38,15 @@ type MermaidDiagramProps = {
 function MermaidDiagram({ source }: MermaidDiagramProps) {
   const [svg, setSvg] = useState('');
   const [error, setError] = useState('');
+  const [isRendering, setIsRendering] = useState(true);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const bindFunctionsRef = useRef<((element: Element) => void) | undefined>(undefined);
 
   useEffect(() => {
     let cancelled = false;
     ensureMermaidInitialized();
-    setSvg('');
     setError('');
+    setIsRendering(true);
     bindFunctionsRef.current = undefined;
 
     mermaidRenderChain = mermaidRenderChain
@@ -62,6 +63,7 @@ function MermaidDiagram({ source }: MermaidDiagramProps) {
           bindFunctionsRef.current = rendered.bindFunctions;
           setSvg(rendered.svg);
           setError('');
+          setIsRendering(false);
         } catch (renderError) {
           if (cancelled) return;
           const message = renderError instanceof Error ? renderError.message : 'Failed to render Mermaid diagram';
@@ -69,6 +71,7 @@ function MermaidDiagram({ source }: MermaidDiagramProps) {
           bindFunctionsRef.current = undefined;
           setSvg('');
           setError(message);
+          setIsRendering(false);
         }
       });
 
@@ -92,7 +95,7 @@ function MermaidDiagram({ source }: MermaidDiagramProps) {
 
   return (
     <div
-      className={`mermaidDiagram${svg ? ' isRendered' : ''}${error ? ' hasError' : ''}`}
+      className={`mermaidDiagram${svg ? ' isRendered' : ''}${error ? ' hasError' : ''}${isRendering ? ' isRendering' : ''}`}
       data-mermaid-error={error || undefined}
       title={error || undefined}
     >

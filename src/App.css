@@ -2927,6 +2927,74 @@
   color: color-mix(in srgb, var(--text) 92%, var(--muted));
 }
 
+.claudeCliHandoffPanel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, var(--text) 8%);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel-2) 86%, var(--text) 4%);
+}
+
+.claudeCliHandoffHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.claudeCliHandoffTitle {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.claudeCliHandoffMeta,
+.claudeCliHandoffHint,
+.claudeCliHandoffLabel {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.claudeCliHandoffActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.claudeCliHandoffGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.claudeCliHandoffCard {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, var(--text) 6%);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 82%, var(--text) 3%);
+}
+
+.claudeCliHandoffValue {
+  word-break: break-word;
+}
+
+.claudeCliSignalList {
+  display: grid;
+  gap: 8px;
+}
+
+.claudeCliSignalItem {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, var(--text) 8%);
+  background: color-mix(in srgb, var(--panel) 80%, var(--text) 4%);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .primaryAction {
   border-color: color-mix(in srgb, var(--accent) 52%, var(--border));
   background: color-mix(in srgb, var(--accent) 20%, var(--panel-2));
@@ -3156,6 +3224,11 @@
   flex-wrap: wrap;
 }
 
+.workspaceRefreshMeta {
+  font-size: 11px;
+  color: var(--muted);
+}
+
 .workspacePathProjectName {
   color: var(--text);
   font-weight: 600;
@@ -3237,6 +3310,7 @@
 }
 
 .explorerHeaderLocate,
+.explorerHeaderRefreshAll,
 .explorerHeaderCreate,
 .explorerHeaderToggle {
   display: inline-flex;
@@ -3261,6 +3335,14 @@
   border: 1px solid color-mix(in srgb, var(--border) 82%, var(--text) 6%);
 }
 
+.explorerHeaderRefreshAll {
+  width: 24px;
+  min-width: 24px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, var(--text) 6%);
+  font-size: 13px;
+}
+
 .explorerHeaderCreate {
   border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--border) 82%, var(--text) 6%);
@@ -3283,11 +3365,38 @@
   cursor: default;
 }
 
+.explorerHeaderRefreshAll:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
 .explorerHeaderLocate:hover:not(:disabled),
+.explorerHeaderRefreshAll:hover:not(:disabled),
 .explorerHeaderCreate:hover:not(:disabled),
 .explorerHeaderToggle:hover {
   background: color-mix(in srgb, var(--panel) 72%, var(--text) 8%);
   color: var(--text);
+}
+
+.explorerRefreshGlyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transform-origin: center;
+}
+
+.explorerRefreshGlyph.spinning {
+  animation: explorerRefreshSpin 0.7s linear infinite;
+}
+
+@keyframes explorerRefreshSpin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .explorerTree {
@@ -4046,13 +4155,18 @@
   display: flex;
   gap: 8px;
   overflow-x: auto;
+  overflow-y: hidden;
   padding-bottom: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--border) 84%, var(--text) 10%) transparent;
 }
 
 .editorTab {
   display: flex;
   align-items: stretch;
   min-width: 0;
+  flex: 0 0 auto;
+  max-width: 240px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: color-mix(in srgb, var(--panel) 78%, var(--text) 3%);
@@ -4068,7 +4182,7 @@
   align-items: center;
   gap: 6px;
   min-width: 0;
-  max-width: 220px;
+  max-width: 208px;
   padding: 7px 10px;
   border: 0;
   background: transparent;
@@ -4121,6 +4235,15 @@
 
 .editorPath:hover {
   color: var(--text);
+}
+
+.editorTabs::-webkit-scrollbar {
+  height: 8px;
+}
+
+.editorTabs::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--border) 84%, var(--text) 10%);
+  border-radius: 999px;
 }
 
 .editorActions {
@@ -4386,8 +4509,14 @@
   user-select: text;
 }
 
-.markdownPreview .mermaidDiagram.isRendered .mermaidSource {
-  display: none;
+.markdownPreview .mermaidDiagram.isRendering:not(.isRendered):not(.hasError) .mermaidCanvas::before {
+  content: 'Rendering diagram…';
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .markdownPreview .mermaidDiagram svg {
@@ -4432,11 +4561,16 @@
 }
 
 .markdownPreview .mermaidSource {
+  display: none;
   margin: 12px 0 0;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
   user-select: text;
+}
+
+.markdownPreview .mermaidDiagram.hasError .mermaidSource {
+  display: block;
 }
 
 .markdownPreview .mermaidSource code {

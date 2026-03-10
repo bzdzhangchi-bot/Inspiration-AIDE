@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const fsp = require('fs/promises');
 const os = require('os');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 const pty = require('node-pty');
 
@@ -29,6 +30,9 @@ const WORKSPACE_WATCH_IGNORED_BASENAMES = new Set([
 const UPDATE_RELEASE_API_URL = 'https://api.github.com/repos/bzdzhangchi-bot/Inspiration-AIDE/releases/latest';
 const UPDATE_DOWNLOADS_SUBDIR = 'Inspiration Downloads';
 const UPDATE_REQUEST_TIMEOUT_MS = 20000;
+const STARTER_PROJECT_TEMPLATE_DIR = path.join(__dirname, 'starter-project');
+const STARTER_PROJECT_TARGET_DIRNAME = 'starter-project';
+const STARTER_PROJECT_MANIFEST_NAME = '.inspiration-starter.json';
 
 const state = {
   workspaceRoot: null,
@@ -85,6 +89,16 @@ function normalizeWorkspaceRoots(nextRoots) {
     normalized.push(resolved);
   }
   return normalized;
+}
+
+function filterExistingWorkspaceRoots(nextRoots) {
+  return normalizeWorkspaceRoots(nextRoots).filter((rootPath) => {
+    try {
+      return fs.statSync(rootPath).isDirectory();
+    } catch {
+      return false;
+    }
+  });
 }
 
 function shouldIgnoreWorkspaceWatchPath(rootPath, targetPath) {
@@ -400,12 +414,13 @@ function loadConfig() {
   try {
     const raw = fs.readFileSync(configPath(), 'utf8');
     const parsed = JSON.parse(raw);
-    const parsedRoots = normalizeWorkspaceRoots(parsed?.workspaceRoots);
+    const parsedRoots = filterExistingWorkspaceRoots(parsed?.workspaceRoots);
     const fallbackRoot = typeof parsed?.workspaceRoot === 'string' && parsed.workspaceRoot.length
       ? path.resolve(parsed.workspaceRoot)
       : null;
-    state.workspaceRoots = parsedRoots.length ? parsedRoots : fallbackRoot ? [fallbackRoot] : [];
-    state.workspaceRoot = state.workspaceRoots.includes(fallbackRoot) ? fallbackRoot : state.workspaceRoots[0] ?? fallbackRoot;
+    const usableFallbackRoot = fallbackRoot && parsedRoots.includes(fallbackRoot) ? fallbackRoot : null;
+    state.workspaceRoots = parsedRoots.length ? parsedRoots : usableFallbackRoot ? [usableFallbackRoot] : [];
+    state.workspaceRoot = usableFallbackRoot ?? state.workspaceRoots[0] ?? null;
   } catch {
     // ignore
   }
@@ -415,6 +430,117 @@ function saveConfig() {
   const next = JSON.stringify({ workspaceRoot: state.workspaceRoot, workspaceRoots: state.workspaceRoots }, null, 2);
   fs.mkdirSync(app.getPath('userData'), { recursive: true });
   fs.writeFileSync(configPath(), next, 'utf8');
+}
+
+function hashBuffer(buffer) {
+  return crypto.createHash('sha1').update(buffer).digest('hex');
+}
+
+async function collectStarterTemplateFiles(baseDir, currentDir = baseDir) {
+  const entries = await fsp.readdir(currentDir, { withFileTypes: true });
+  const files = [];
+
+  for (const entry of entries) {
+    const sourcePath = path.join(currentDir, entry.name);
+    const relativePath = path.relative(baseDir, sourcePath).replace(/\\/g, '/');
+    if (relativePath === STARTER_PROJECT_MANIFEST_NAME) continue;
+
+    if (entry.isDirectory()) {
+      files.push(...await collectStarterTemplateFiles(baseDir, sourcePath));
+      continue;
+    }
+
+    if (!entry.isFile()) continue;
+    files.push({ sourcePath, relativePath });
+  }
+
+  return files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+}
+
+async function readStarterManifest(destinationDir) {
+  const manifestPath = path.join(destinationDir, STARTER_PROJECT_MANIFEST_NAME);
+  try {
+    const raw = await fsp.readFile(manifestPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return typeof parsed === 'object' && parsed
+      ? parsed
+      : { templateHashes: {} };
+  } catch {
+    return { templateHashes: {} };
+  }
+}
+
+async function writeStarterManifest(destinationDir, manifest) {
+  const manifestPath = path.join(destinationDir, STARTER_PROJECT_MANIFEST_NAME);
+  await fsp.mkdir(destinationDir, { recursive: true });
+  await fsp.writeFile(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
+}
+
+async function syncStarterTemplateTree(sourceDir, destinationDir) {
+  const templateFiles = await collectStarterTemplateFiles(sourceDir);
+  const previousManifest = await readStarterManifest(destinationDir);
+  const previousHashes = typeof previousManifest.templateHashes === 'object' && previousManifest.templateHashes
+    ? previousManifest.templateHashes
+    : {};
+  const nextHashes = {};
+
+  await fsp.mkdir(destinationDir, { recursive: true });
+
+  for (const file of templateFiles) {
+    const destinationPath = path.join(destinationDir, file.relativePath);
+    const templateBuffer = await fsp.readFile(file.sourcePath);
+    const templateHash = hashBuffer(templateBuffer);
+    nextHashes[file.relativePath] = templateHash;
+
+    let shouldWrite = !(await pathExists(destinationPath));
+    if (!shouldWrite) {
+      if (!previousHashes[file.relativePath]) {
+        shouldWrite = true;
+      } else {
+        const existingBuffer = await fsp.readFile(destinationPath);
+        const existingHash = hashBuffer(existingBuffer);
+        shouldWrite = existingHash === previousHashes[file.relativePath];
+      }
+    }
+
+    if (shouldWrite) {
+      await fsp.mkdir(path.dirname(destinationPath), { recursive: true });
+      await fsp.writeFile(destinationPath, templateBuffer);
+    }
+  }
+
+  await writeStarterManifest(destinationDir, {
+    updatedAt: new Date().toISOString(),
+    templateHashes: nextHashes
+  });
+}
+
+async function ensureStarterWorkspace() {
+  if (!(await pathExists(STARTER_PROJECT_TEMPLATE_DIR))) {
+    return null;
+  }
+
+  const starterRoot = path.join(app.getPath('userData'), STARTER_PROJECT_TARGET_DIRNAME);
+  await syncStarterTemplateTree(STARTER_PROJECT_TEMPLATE_DIR, starterRoot);
+  return starterRoot;
+}
+
+async function syncStarterWorkspaceState() {
+  const starterRoot = await ensureStarterWorkspace();
+  if (!starterRoot) return;
+
+  const starterIsTracked = state.workspaceRoot === starterRoot || state.workspaceRoots.includes(starterRoot);
+  if (!state.workspaceRoots.length) {
+    setWorkspaceState([starterRoot], starterRoot, { resetTerminal: false });
+    return;
+  }
+
+  if (starterIsTracked) {
+    const nextRoots = state.workspaceRoots.includes(starterRoot)
+      ? state.workspaceRoots
+      : [...state.workspaceRoots, starterRoot];
+    setWorkspaceState(nextRoots, state.workspaceRoot ?? starterRoot, { resetTerminal: false });
+  }
 }
 
 function getDefaultTerminalTitle(id) {
@@ -1962,8 +2088,9 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   loadConfig();
+  await syncStarterWorkspaceState();
   watchWorkspaceRoots(state.workspaceRoots);
   registerIpc();
 

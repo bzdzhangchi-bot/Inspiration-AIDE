@@ -42,7 +42,11 @@ type WelcomeShortcutItem = {
   run: () => void | Promise<void>;
 };
 
+const STARTER_PROJECT_ROOT_NAME = 'starter-project';
+const STARTER_PROJECT_GUIDE_NAME = '新手引导.md';
+
 type ExplorerActionTarget = DirEntry | { name: string; path: string; kind: 'root' };
+type EditorTabContextMenuState = { x: number; y: number; path: string };
 type ExplorerInputState = {
   mode: 'create-file' | 'create-dir' | 'copy';
   targetDir: string;
@@ -559,6 +563,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const editorOverlayRef = useRef<HTMLPreElement | null>(null);
   const previewBodyRef = useRef<HTMLDivElement | null>(null);
+  const editorTabsRef = useRef<HTMLDivElement | null>(null);
   const inlineStreamRef = useRef<{ close: () => void } | null>(null);
   const agentStreamRef = useRef<{ close: () => void } | null>(null);
   const splitDragRef = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -566,6 +571,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   const activePathRef = useRef<string | null>(null);
   const expandedDirsRef = useRef<string[]>([]);
   const openDocsRef = useRef<OpenDoc[]>([]);
+  const autoOpenedStarterGuideRootsRef = useRef<Set<string>>(new Set());
   const refreshTimerRef = useRef<number | null>(null);
 
   const [suggestionText, setSuggestionText] = useState<string>('');
@@ -598,8 +604,11 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   const [explorerToast, setExplorerToast] = useState<string>('');
   const [explorerInputState, setExplorerInputState] = useState<ExplorerInputState | null>(null);
   const [explorerContextMenu, setExplorerContextMenu] = useState<null | { x: number; y: number; target: ExplorerActionTarget; mode: 'create' | 'full' }>(null);
+  const [editorTabContextMenu, setEditorTabContextMenu] = useState<EditorTabContextMenuState | null>(null);
   const [activeWorkspaceBranch, setActiveWorkspaceBranch] = useState<string | null>(null);
   const [status, setStatus] = useState<string>('');
+  const [isRefreshingWorkspace, setIsRefreshingWorkspace] = useState(false);
+  const [lastRefreshedAt, setLastRefreshedAt] = useState<number | null>(null);
   const [rootMenuOpenFor, setRootMenuOpenFor] = useState<string | null>(null);
   const [entryMenuOpenFor, setEntryMenuOpenFor] = useState<string | null>(null);
   const [draggedRoot, setDraggedRoot] = useState<string | null>(null);
@@ -790,6 +799,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
         || target.closest('.workspaceRootMenuAnchor')
         || target.closest('.explorerEntryMenuAnchor')
         || target.closest('.explorerContextMenu')
+        || target.closest('.editorTabContextMenu')
         || target.closest('.explorerInputDialog')
       ) {
         return;
@@ -797,6 +807,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
       setRootMenuOpenFor(null);
       setEntryMenuOpenFor(null);
       setExplorerContextMenu(null);
+      setEditorTabContextMenu(null);
     }
 
     function handleKeyDown(event: KeyboardEvent) {
@@ -804,6 +815,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
         setRootMenuOpenFor(null);
         setEntryMenuOpenFor(null);
         setExplorerContextMenu(null);
+        setEditorTabContextMenu(null);
         setExplorerInputState(null);
       }
     }
@@ -1035,6 +1047,18 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     await revealFileInExplorer(activePath);
   }, [activePath, revealFileInExplorer]);
 
+  const revealWorkspaceRoot = useCallback(async (root: string) => {
+    setCollapsedWorkspaceRoots((prev) => prev.filter((item) => item !== root));
+    if (isExplorerCollapsed) {
+      setIsExplorerCollapsed(false);
+    }
+    requestAnimationFrame(() => {
+      const selector = `[data-workspace-root="${CSS.escape(root)}"]`;
+      const target = document.querySelector<HTMLElement>(selector);
+      target?.scrollIntoView({ block: 'center' });
+    });
+  }, [isExplorerCollapsed]);
+
   const refreshOpenDocsFromDisk = useCallback(async (changedPath?: string | null) => {
     const docs = openDocsRef.current;
     const cleanDocs = docs.filter((doc) => !doc.dirty && (!changedPath || isPathRelated(doc.path, changedPath)));
@@ -1237,15 +1261,50 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
         return a.name.localeCompare(b.name);
       });
       setTreeEntries((prev) => ({ ...prev, [dirPath]: items }));
+    } catch {
+      setTreeEntries((prev) => {
+        if (!(dirPath in prev)) return prev;
+        const next = { ...prev };
+        delete next[dirPath];
+        return next;
+      });
+      setExpandedDirs((prev) => prev.filter((item) => item !== dirPath));
     } finally {
       setLoadingDirs((prev) => prev.filter((item) => item !== dirPath));
     }
   }, [loadingDirs]);
 
+  const refreshWorkspaceRoot = useCallback(async (root: string) => {
+    await refreshList(root);
+    const expandedDirsInRoot = expandedDirsRef.current.filter((dirPath) => isPathInsideRoot(root, dirPath));
+    await Promise.all(expandedDirsInRoot.map((dirPath) => loadDirChildren(dirPath)));
+  }, [loadDirChildren, refreshList]);
+
+  const refreshAllWorkspaces = useCallback(async () => {
+    if (!workspaceRoots.length) return;
+    setIsRefreshingWorkspace(true);
+    try {
+      await Promise.all(workspaceRoots.map((root) => refreshWorkspaceRoot(root)));
+      setStatus(`Refreshed ${workspaceRoots.length} project${workspaceRoots.length > 1 ? 's' : ''}`);
+      setLastRefreshedAt(Date.now());
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Failed to refresh workspace');
+    } finally {
+      setIsRefreshingWorkspace(false);
+    }
+  }, [refreshWorkspaceRoot, workspaceRoots]);
+
   async function onPickWorkspace() {
     try {
       const root = await fsClient.selectWorkspaceFolder();
       if (!root) return;
+      if (workspaceRoots.includes(root)) {
+        await activateWorkspaceRoot(root);
+        await revealWorkspaceRoot(root);
+        setStatus('');
+        showExplorerToast(`${getWorkspaceRootName(root)} is already open`);
+        return;
+      }
       setWorkspaceRoots((prev) => prev.includes(root) ? prev : [...prev, root]);
       setWorkspaceRoot(root);
       setSuggestionText('');
@@ -1315,6 +1374,19 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
       return false;
     }
   }, [activateWorkspaceRoot, ensureFileVisible, findWorkspaceRootForPath, isExplorerCollapsed, workspaceRoot]);
+
+  useEffect(() => {
+    if (!workspaceRoot) return;
+    if (getFileName(workspaceRoot) !== STARTER_PROJECT_ROOT_NAME) return;
+    if (autoOpenedStarterGuideRootsRef.current.has(workspaceRoot)) return;
+    if (openDocsRef.current.length > 0 || activePathRef.current) return;
+
+    const guideEntry = rootEntries.find((entry) => entry.kind === 'file' && entry.name === STARTER_PROJECT_GUIDE_NAME);
+    if (!guideEntry) return;
+
+    autoOpenedStarterGuideRootsRef.current.add(workspaceRoot);
+    void openWorkspaceFile(guideEntry.path);
+  }, [openWorkspaceFile, rootEntries, workspaceRoot]);
 
   const revealWorkspaceFile = useCallback(async (filePath: string) => {
     const root = findWorkspaceRootForPath(filePath);
@@ -1874,6 +1946,47 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     }
   }
 
+  function closeAllDocs() {
+    const dirtyDocs = openDocs.filter((doc) => doc.dirty);
+    if (dirtyDocs.length) {
+      const ok = window.confirm(`Close all tabs? ${dirtyDocs.length} unsaved file${dirtyDocs.length > 1 ? 's' : ''} will be closed without saving.`);
+      if (!ok) return;
+    }
+    setOpenDocs([]);
+    setActivePath(null);
+    setEditorTabContextMenu(null);
+  }
+
+  function closeOtherDocs(targetPath: string) {
+    const docsToClose = openDocs.filter((doc) => doc.path !== targetPath);
+    const dirtyDocs = docsToClose.filter((doc) => doc.dirty);
+    if (dirtyDocs.length) {
+      const ok = window.confirm(`Close other tabs? ${dirtyDocs.length} unsaved file${dirtyDocs.length > 1 ? 's' : ''} will be closed without saving.`);
+      if (!ok) return;
+    }
+    const targetDoc = openDocs.find((doc) => doc.path === targetPath);
+    setOpenDocs(targetDoc ? [targetDoc] : []);
+    setActivePath(targetDoc?.path ?? null);
+    setEditorTabContextMenu(null);
+  }
+
+  function closeDocsToRight(targetPath: string) {
+    const targetIndex = openDocs.findIndex((doc) => doc.path === targetPath);
+    if (targetIndex < 0) return;
+    const docsToClose = openDocs.slice(targetIndex + 1);
+    const dirtyDocs = docsToClose.filter((doc) => doc.dirty);
+    if (dirtyDocs.length) {
+      const ok = window.confirm(`Close tabs to the right? ${dirtyDocs.length} unsaved file${dirtyDocs.length > 1 ? 's' : ''} will be closed without saving.`);
+      if (!ok) return;
+    }
+    const nextDocs = openDocs.slice(0, targetIndex + 1);
+    setOpenDocs(nextDocs);
+    if (activePath && !nextDocs.some((doc) => doc.path === activePath)) {
+      setActivePath(targetPath);
+    }
+    setEditorTabContextMenu(null);
+  }
+
   function scrollPreviewToHeading(headingId: string) {
     const target = previewBodyRef.current?.querySelector<HTMLElement>(`#${CSS.escape(headingId)}`);
     target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1885,6 +1998,16 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     overlay.scrollTop = target.scrollTop;
     overlay.scrollLeft = target.scrollLeft;
   }
+
+  useEffect(() => {
+    if (!activePath) return;
+    requestAnimationFrame(() => {
+      const tabsEl = editorTabsRef.current;
+      if (!tabsEl) return;
+      const target = tabsEl.querySelector<HTMLElement>(`[data-editor-tab-path="${CSS.escape(activePath)}"]`);
+      target?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+  }, [activePath, openDocs]);
 
   function getTreeItemPadding(depth: number) {
     if (depth <= 0) return 6;
@@ -2039,6 +2162,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
       <div
         key={root}
         className={sectionClassName}
+        data-workspace-root={root}
         onDragOver={(event) => onWorkspaceRootDragOver(event, root)}
         onDrop={(event) => onWorkspaceRootDrop(event, root)}
       >
@@ -2137,6 +2261,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
                       </button>
                     ) : null}
                     <span>{workspaceRoots.length} project{workspaceRoots.length > 1 ? 's' : ''} open</span>
+                    {lastRefreshedAt ? <span className="workspaceRefreshMeta">Refreshed {new Date(lastRefreshedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span> : null}
                   </span>
                   <span className="workspacePathLocation">{workspaceRoot}</span>
                 </>
@@ -2164,6 +2289,16 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
                   <circle cx="12" cy="12" r="7.25" fill="none" stroke="currentColor" strokeWidth="1.7" />
                   <circle cx="12" cy="12" r="2.25" fill="currentColor" />
                 </svg>
+              </button>
+              <button
+                type="button"
+                className="explorerHeaderRefreshAll"
+                onClick={() => void refreshAllWorkspaces()}
+                aria-label="Refresh all projects"
+                title={workspaceRoots.length ? `Refresh all ${workspaceRoots.length} open project${workspaceRoots.length > 1 ? 's' : ''}` : 'Open a project first'}
+                disabled={!workspaceRoots.length || isRefreshingWorkspace}
+              >
+                <span className={isRefreshingWorkspace ? 'explorerRefreshGlyph spinning' : 'explorerRefreshGlyph'} aria-hidden="true">⟲</span>
               </button>
               <button
                 type="button"
@@ -2225,9 +2360,21 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
         <div className="editorPane">
           {openDocs.length ? (
             <>
-              <div className="editorTabs">
+              <div className="editorTabs" ref={editorTabsRef}>
                 {openDocs.map((doc) => (
-                  <div key={doc.path} className={doc.path === activePath ? 'editorTab active' : 'editorTab'}>
+                  <div
+                    key={doc.path}
+                    data-editor-tab-path={doc.path}
+                    className={doc.path === activePath ? 'editorTab active' : 'editorTab'}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      setEditorTabContextMenu({
+                        x: event.clientX,
+                        y: event.clientY,
+                        path: doc.path
+                      });
+                    }}
+                  >
                     <button type="button" className="editorTabMain" onClick={() => setActivePath(doc.path)}>
                       <span>{doc.name}</span>
                       {doc.dirty ? <span className="editorTabDirty">•</span> : null}
@@ -2242,13 +2389,10 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
               {activeDoc ? (
                 <>
                   <div className="editorHeader">
-                    <button type="button" className="editorPath" title={activeDoc.path} onClick={() => void revealCurrentFile()}>
+                    <div className="editorPath" title={activeDoc.path}>
                       {activeDoc.path}
-                    </button>
+                    </div>
                     <div className="editorActions">
-                      <button type="button" onClick={() => void revealCurrentFile()}>
-                        Reveal in Explorer
-                      </button>
                       <div className="fileBadge strong">{activeFileType}</div>
                       {activeDoc.fileState.kind === 'binary' ? <div className="fileBadge strong">BIN</div> : null}
                       {activeDoc.fileState.readOnly ? <div className="fileBadge strong">RO</div> : null}
@@ -2593,6 +2737,53 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
                 Delete
               </button>
             ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {editorTabContextMenu ? (
+        <div className="explorerContextOverlay" onClick={() => setEditorTabContextMenu(null)}>
+          <div
+            className="explorerContextMenu editorTabContextMenu"
+            role="menu"
+            style={{ left: `${Math.min(editorTabContextMenu.x, window.innerWidth - 200)}px`, top: `${Math.min(editorTabContextMenu.y, window.innerHeight - 140)}px` }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="workspaceRootMenuItem"
+              onClick={() => {
+                closeDoc(editorTabContextMenu.path);
+                setEditorTabContextMenu(null);
+              }}
+              role="menuitem"
+            >
+              Close
+            </button>
+            <button
+              type="button"
+              className="workspaceRootMenuItem"
+              onClick={closeAllDocs}
+              role="menuitem"
+            >
+              Close All
+            </button>
+            <button
+              type="button"
+              className="workspaceRootMenuItem"
+              onClick={() => closeOtherDocs(editorTabContextMenu.path)}
+              role="menuitem"
+            >
+              Close Others
+            </button>
+            <button
+              type="button"
+              className="workspaceRootMenuItem"
+              onClick={() => closeDocsToRight(editorTabContextMenu.path)}
+              role="menuitem"
+            >
+              Close Tabs to the Right
+            </button>
           </div>
         </div>
       ) : null}

@@ -309,6 +309,7 @@ function App() {
                 onRunCommandInTerminal={runTerminalCommandFromChat}
                 onInterruptAgentRun={interruptAgentRunFromChat}
                 onSendPromptToClaudeCli={sendPromptToClaudeCliFromChat}
+                onFocusClaudeCliTerminal={ensureTerminalOpenAndFocused}
                 onInterruptClaudeCli={interruptClaudeCliFromChat}
               />
             ) : activePage === 'git' ? (
