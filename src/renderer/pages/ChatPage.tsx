@@ -1,5 +1,5 @@
 import DOMPurify from 'dompurify';
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Children, isValidElement, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
@@ -15,6 +15,24 @@ type Msg = {
   role: 'user' | 'assistant';
   content: string;
 };
+
+type MarkdownParagraphProps = ComponentPropsWithoutRef<'p'>;
+
+function MarkdownParagraph({ children, ...props }: MarkdownParagraphProps) {
+  const nodes = Children.toArray(children).filter((child) => {
+    if (typeof child !== 'string') return true;
+    return child.trim().length > 0;
+  });
+  if (
+    nodes.length === 1
+    && isValidElement(nodes[0])
+    && typeof nodes[0].type === 'string'
+    && nodes[0].type === 'code'
+  ) {
+    return <span {...props}>{children}</span>;
+  }
+  return <p {...props}>{children}</p>;
+}
 
 const MessageList = memo(function MessageList({ messages }: { messages: Msg[] }) {
   return (
@@ -156,6 +174,7 @@ function ChatBubbleContent({ content, renderMarkdown = false }: { content: strin
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkBreaks]}
           components={{
+            p: MarkdownParagraph,
             a({ href, children, ...props }) {
               const external = typeof href === 'string' && /^(https?:)?\/\//.test(href);
               return (
@@ -2954,7 +2973,12 @@ export function ChatPage(props: {
                           <div className="cardTitle">Latest Response</div>
                           {nativeAgentInspectorSnapshot?.lastResponse ? (
                             <div className="bubbleRichContent bubbleMarkdownContent">
-                              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{nativeAgentInspectorSnapshot.lastResponse}</ReactMarkdown>
+                              <ReactMarkdown
+                                remarkPlugins={[remarkGfm, remarkBreaks]}
+                                components={{ p: MarkdownParagraph }}
+                              >
+                                {nativeAgentInspectorSnapshot.lastResponse}
+                              </ReactMarkdown>
                             </div>
                           ) : (
                             <div className="claudeInspectorSectionCalloutMeta">No completed Native Agent response has been recorded yet.</div>

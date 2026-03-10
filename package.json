@@ -1,7 +1,7 @@
 {
   "name": "inspiration",
   "private": true,
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Inspiration is a desktop AI coding workspace with chat, terminal, and multi-project explorer.",
   "author": "Zhang Chi",
   "main": "electron/main.cjs",

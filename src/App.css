@@ -3081,9 +3081,12 @@
 .bubbleRichContent code {
   font-family: var(--font-editor);
   font-size: 0.92em;
-  padding: 0.1em 0.35em;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--panel) 72%, var(--text) 8%);
+  padding: 0.08em 0.38em;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--border) 86%, var(--text) 6%);
+  background: color-mix(in srgb, var(--panel) 90%, var(--text) 3%);
+  color: color-mix(in srgb, var(--text) 94%, var(--muted) 6%);
+  box-shadow: none;
 }
 
 .bubbleRichContent pre {
@@ -3094,8 +3097,10 @@
 }
 
 .bubbleRichContent pre code {
+  border: 0;
   padding: 0;
   background: transparent;
+  box-shadow: none;
 }
 
 .bubbleRichContent blockquote {
@@ -4475,6 +4480,12 @@
 .markdownPreview code {
   font-family: var(--font-editor);
   font-size: 0.94em;
+  padding: 0.08em 0.38em;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--border) 86%, var(--text) 6%);
+  background: color-mix(in srgb, var(--panel) 92%, var(--text) 3%);
+  color: color-mix(in srgb, var(--text) 94%, var(--muted) 6%);
+  box-shadow: none;
 }
 
 .markdownPreview pre {
@@ -4488,8 +4499,10 @@
 
 .markdownPreview pre code.hljs {
   display: block;
+  border: 0;
   padding: 0;
   background: transparent;
+  box-shadow: none;
   color: color-mix(in srgb, var(--text) 92%, #dfe7f1 8%);
 }
 

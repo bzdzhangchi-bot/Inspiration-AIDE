@@ -1,4 +1,4 @@
-import { type ComponentPropsWithoutRef, useEffect, useMemo, useRef, useState } from 'react';
+import { Children, isValidElement, type ComponentPropsWithoutRef, useEffect, useMemo, useRef, useState } from 'react';
 import hljs from 'highlight.js';
 import mermaid from 'mermaid';
 import ReactMarkdown from 'react-markdown';
@@ -108,12 +108,69 @@ function MermaidDiagram({ source }: MermaidDiagramProps) {
 }
 
 type MarkdownCodeProps = ComponentPropsWithoutRef<'code'> & {
-  inline?: boolean;
+  node?: {
+    tagName?: string;
+    properties?: {
+      className?: string[] | string;
+    };
+  };
 };
 
-function MarkdownCode({ inline, className, children, ...props }: MarkdownCodeProps) {
-  const source = String(children ?? '').replace(/\n$/, '');
-  const language = className?.match(/language-([^\s]+)/)?.[1]?.toLowerCase();
+type MarkdownParagraphProps = ComponentPropsWithoutRef<'p'>;
+type MarkdownPreProps = ComponentPropsWithoutRef<'pre'>;
+type MarkdownNode = {
+  tagName?: string;
+  properties?: {
+    className?: string[] | string;
+  };
+  children?: Array<{
+    type?: string;
+    value?: string;
+    tagName?: string;
+    properties?: {
+      className?: string[] | string;
+    };
+    children?: Array<{
+      type?: string;
+      value?: string;
+    }>;
+  }>;
+};
+
+function MarkdownParagraph({ children, ...props }: MarkdownParagraphProps) {
+  const nodes = Children.toArray(children).filter((child) => {
+    if (typeof child !== 'string') return true;
+    return child.trim().length > 0;
+  });
+  if (
+    nodes.length === 1
+    && isValidElement(nodes[0])
+    && typeof nodes[0].type === 'string'
+    && nodes[0].type === 'code'
+  ) {
+    return <span {...props}>{children}</span>;
+  }
+  return <p {...props}>{children}</p>;
+}
+
+function MarkdownCode({ className, children, ...props }: MarkdownCodeProps) {
+  return <code className={className} {...props}>{children}</code>;
+}
+
+function MarkdownPre({ children, ...props }: MarkdownPreProps & { node?: MarkdownNode }) {
+  const codeNode = props.node?.children?.find((child) => child.tagName === 'code');
+  if (!codeNode) {
+    return <pre {...props}>{children}</pre>;
+  }
+
+  const className = Array.isArray(codeNode.properties?.className)
+    ? codeNode.properties?.className.join(' ')
+    : codeNode.properties?.className ?? '';
+  const source = (codeNode.children ?? [])
+    .map((child) => child.value ?? '')
+    .join('')
+    .replace(/\n$/, '');
+  const language = className.match(/language-([^\s]+)/)?.[1]?.toLowerCase();
   const highlighted = useMemo(() => {
     if (!language) {
       return hljs.highlightAuto(source);
@@ -124,18 +181,13 @@ function MarkdownCode({ inline, className, children, ...props }: MarkdownCodePro
     return hljs.highlightAuto(source);
   }, [language, source]);
 
-  if (inline) {
-    return <code className={className} {...props}>{children}</code>;
-  }
-
   if (language === 'mermaid') {
     return <MermaidDiagram source={source} />;
   }
 
   return (
-    <pre>
+    <pre {...props}>
       <code
-        {...props}
         className={`hljs${highlighted.language ? ` language-${highlighted.language}` : ''}`}
         dangerouslySetInnerHTML={{ __html: highlighted.value }}
       />
@@ -149,9 +201,8 @@ export default function MarkdownPreviewContent({ markdown }: { markdown: string 
       remarkPlugins={[remarkGfm, remarkBreaks]}
       rehypePlugins={[rehypeSlug]}
       components={{
-        pre({ children }) {
-          return <>{children}</>;
-        },
+        p: MarkdownParagraph,
+        pre: MarkdownPre,
         code: MarkdownCode,
         a({ href, children, ...props }) {
           const external = typeof href === 'string' && /^(https?:)?\/\//.test(href);
