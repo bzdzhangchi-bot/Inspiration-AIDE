@@ -1,0 +1,7 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "gh": true,
+        "xcrun": true,
+        "npx electron-builder": true
+    }
+}

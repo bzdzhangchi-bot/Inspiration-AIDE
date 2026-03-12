@@ -1,5 +1,5 @@
 export type ProviderId = 'openai_compat' | 'anthropic' | 'github_copilot';
-export type InteractionMode = 'standard' | 'claude_code' | 'claude_cli';
+export type InteractionMode = 'standard' | 'native_agent' | 'claude_cli';
 
 export type Role = 'system' | 'user' | 'assistant';
 
@@ -18,7 +18,23 @@ export type ChatRequest = {
   temperature?: number;
 };
 
-export type AgentToolName = 'list_dir' | 'read_file' | 'apply_patch' | 'write_file' | 'run_command' | 'ask_user';
+export type AgentToolName =
+  | 'list_dir'
+  | 'read_file'
+  | 'read_file_range'
+  | 'search_text'
+  | 'openclaw_skill_list'
+  | 'openclaw_skill_info'
+  | 'openclaw_agent'
+  | 'apply_patch'
+  | 'write_file'
+  | 'create_file'
+  | 'create_dir'
+  | 'delete_entry'
+  | 'git_status'
+  | 'git_diff'
+  | 'run_command'
+  | 'ask_user';
 
 export type AgentTextBlock = {
   type: 'text';

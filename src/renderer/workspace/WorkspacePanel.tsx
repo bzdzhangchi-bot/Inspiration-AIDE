@@ -1,6 +1,6 @@
 import GithubSlugger from 'github-slugger';
 import { Suspense, lazy, type DragEvent as ReactDragEvent, forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { fsClient } from '../fsClient';
+import { fsClient, type OpenClawInstallerState as OpenClawBackgroundInstallerState } from '../fsClient';
 import { CORE_SERVER_URL, openAgentPatchStream, openInlineCompletionStream } from '../wsClient';
 import type { ProviderId } from '../../shared/types';
 
@@ -44,6 +44,7 @@ type WelcomeShortcutItem = {
 
 const STARTER_PROJECT_ROOT_NAME = 'starter-project';
 const STARTER_PROJECT_GUIDE_NAME = '新手引导.md';
+const WORKSPACE_EDITOR_STATE_KEY = 'workspaceEditorState.v1';
 
 type ExplorerActionTarget = DirEntry | { name: string; path: string; kind: 'root' };
 type EditorTabContextMenuState = { x: number; y: number; path: string };
@@ -54,6 +55,23 @@ type ExplorerInputState = {
   title: string;
   confirmLabel: string;
   value: string;
+};
+
+type PersistedWorkspaceEditorState = {
+  workspaceRoots: string[];
+  activePath: string | null;
+  openDocs: Array<{
+    path: string;
+    viewMode: OpenDoc['viewMode'];
+  }>;
+};
+
+export type OpenClawInstallState = {
+  nodeVersion: string | null;
+  npmVersion: string | null;
+  openclawVersion: string | null;
+  nodeOk: boolean;
+  npmOk: boolean;
 };
 
 const MarkdownPreviewContent = lazy(() => import('./MarkdownPreviewContent'));
@@ -107,6 +125,26 @@ function getFileName(filePath: string) {
   return filePath.split(/[\\/]/).pop() ?? filePath;
 }
 
+function parseVersionParts(value: string | null) {
+  const match = (value ?? '').trim().match(/^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+  if (!match) return null;
+  return {
+    major: Number(match[1] ?? 0),
+    minor: Number(match[2] ?? 0),
+    patch: Number(match[3] ?? 0)
+  };
+}
+
+function isOpenClawNodeVersionSupported(value: string | null) {
+  const parsed = parseVersionParts(value);
+  if (!parsed) return false;
+  if (parsed.major > 22) return true;
+  if (parsed.major < 22) return false;
+  if (parsed.minor > 12) return true;
+  if (parsed.minor < 12) return false;
+  return parsed.patch >= 0;
+}
+
 function getParentPath(targetPath: string) {
   const normalized = targetPath.replace(/[\\/]+$/, '');
   const separatorIndex = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
@@ -115,6 +153,46 @@ function getParentPath(targetPath: string) {
 
 function joinWorkspacePath(basePath: string, nextSegment: string) {
   return `${basePath.replace(/[\\/]$/, '')}/${nextSegment.replace(/^[/\\]+/, '')}`;
+}
+
+function normalizeWorkspacePath(pathValue: string) {
+  const isAbsolute = pathValue.startsWith('/');
+  const segments = pathValue
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter((segment) => segment.length > 0);
+  const normalized: string[] = [];
+  for (const segment of segments) {
+    if (segment === '.') continue;
+    if (segment === '..') {
+      normalized.pop();
+      continue;
+    }
+    normalized.push(segment);
+  }
+  return `${isAbsolute ? '/' : ''}${normalized.join('/')}`;
+}
+
+function getPathDirectory(pathValue: string) {
+  const normalized = normalizeWorkspacePath(pathValue);
+  const index = normalized.lastIndexOf('/');
+  if (index <= 0) return normalized.startsWith('/') ? '/' : '';
+  return normalized.slice(0, index);
+}
+
+function resolveWorkspaceLinkPath(currentFilePath: string, href: string) {
+  const [pathWithoutHash] = href.split('#', 1);
+  const [pathWithoutQuery] = pathWithoutHash.split('?', 1);
+  const decoded = decodeURIComponent(pathWithoutQuery.trim());
+  if (!decoded) return null;
+  if (/^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(decoded) || decoded.startsWith('mailto:')) {
+    return null;
+  }
+  if (decoded.startsWith('/')) {
+    return normalizeWorkspacePath(decoded);
+  }
+  const baseDir = getPathDirectory(currentFilePath);
+  return normalizeWorkspacePath(joinWorkspacePath(baseDir, decoded));
 }
 
 function buildCopyName(name: string, kind: DirEntry['kind']) {
@@ -526,6 +604,12 @@ export type WorkspacePanelContext = {
   pendingPatchCount: number;
   agentStatus: string;
   dirty: boolean;
+  openClaw: {
+    installed: boolean;
+    version: string | null;
+    checking: boolean;
+    dialogOpen: boolean;
+  };
   javaProject: {
     enabled: boolean;
     buildTool: JavaBuildTool | null;
@@ -543,6 +627,11 @@ export type WorkspacePanelHandle = {
   syncExternalWrite: (filePath: string, contents: string) => Promise<void>;
   openWorkspaceFile: (filePath: string, options?: { reveal?: boolean }) => Promise<boolean>;
   revealWorkspaceFile: (filePath: string) => Promise<boolean>;
+  openProjectPicker: () => Promise<void>;
+  openOpenClawSetup: () => Promise<void>;
+  refreshOpenClawInstallState: () => Promise<OpenClawInstallState | null>;
+  installOpenClawCli: () => Promise<void>;
+  startOpenClawOnboarding: () => Promise<void>;
 };
 
 export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
@@ -557,8 +646,9 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   onContextChange?: (context: WorkspacePanelContext) => void;
   onOpenGitPage?: () => void;
   onRunCommandInTerminal?: (command: string, timeoutMs?: number) => Promise<unknown>;
+  onSendCommandToTerminal?: (command: string) => Promise<unknown>;
 }>(function WorkspacePanel(props, ref) {
-  const { onContextChange, onOpenGitPage, settings } = props;
+  const { onContextChange, onOpenGitPage, onSendCommandToTerminal, settings } = props;
   const panelRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const editorOverlayRef = useRef<HTMLPreElement | null>(null);
@@ -573,7 +663,8 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   const openDocsRef = useRef<OpenDoc[]>([]);
   const autoOpenedStarterGuideRootsRef = useRef<Set<string>>(new Set());
   const refreshTimerRef = useRef<number | null>(null);
-
+  const restoredWorkspaceStateKeyRef = useRef<string | null>(null);
+  const persistedWorkspaceEditorStateRef = useRef<string | null>(null);
   const [suggestionText, setSuggestionText] = useState<string>('');
   const [isSuggesting, setIsSuggesting] = useState(false);
   const [suggestionError, setSuggestionError] = useState<string>('');
@@ -608,6 +699,30 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   const [activeWorkspaceBranch, setActiveWorkspaceBranch] = useState<string | null>(null);
   const [status, setStatus] = useState<string>('');
   const [isRefreshingWorkspace, setIsRefreshingWorkspace] = useState(false);
+  const [isInstallingOpenClaw, setIsInstallingOpenClaw] = useState(false);
+  const [isCheckingOpenClaw, setIsCheckingOpenClaw] = useState(false);
+  const [isRunningOpenClawOnboarding, setIsRunningOpenClawOnboarding] = useState(false);
+  const [isOpenClawInstallerOpen, setIsOpenClawInstallerOpen] = useState(false);
+  const [openClawInstallState, setOpenClawInstallState] = useState<OpenClawInstallState>({
+    nodeVersion: null,
+    npmVersion: null,
+    openclawVersion: null,
+    nodeOk: false,
+    npmOk: false
+  });
+  const [openClawInstallerState, setOpenClawInstallerState] = useState<OpenClawBackgroundInstallerState>({
+    status: 'idle',
+    mode: 'install',
+    step: 'idle',
+    message: 'OpenClaw installer idle.',
+    detail: null,
+    log: '',
+    percent: null,
+    startedAt: null,
+    finishedAt: null,
+    openClawVersion: null
+  });
+  const [openClawInstallLog, setOpenClawInstallLog] = useState<string>('');
   const [lastRefreshedAt, setLastRefreshedAt] = useState<number | null>(null);
   const [rootMenuOpenFor, setRootMenuOpenFor] = useState<string | null>(null);
   const [entryMenuOpenFor, setEntryMenuOpenFor] = useState<string | null>(null);
@@ -746,6 +861,12 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
       pendingPatchCount: agentPatches.length,
       agentStatus,
       dirty,
+      openClaw: {
+        installed: !!openClawInstallState.openclawVersion,
+        version: openClawInstallState.openclawVersion,
+        checking: isCheckingOpenClaw,
+        dialogOpen: isOpenClawInstallerOpen
+      },
       javaProject: {
         enabled: javaProjectInfo.enabled,
         buildTool: javaProjectInfo.buildTool,
@@ -756,7 +877,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
         hasTestMethods: activeJavaInfo?.hasTestMethods ?? false
       }
     });
-  }, [activeJavaInfo, activePath, activeText, agentPatches.length, agentStatus, dirty, javaProjectInfo, onContextChange, rootEntries, selectedExplorerEntry, workspaceRoot]);
+  }, [activeJavaInfo, activePath, activeText, agentPatches.length, agentStatus, dirty, isCheckingOpenClaw, isOpenClawInstallerOpen, javaProjectInfo, onContextChange, openClawInstallState.openclawVersion, rootEntries, selectedExplorerEntry, workspaceRoot]);
 
   useEffect(() => {
     return () => {
@@ -791,6 +912,22 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     localStorage.setItem('workspaceCollapsedRoots', JSON.stringify(collapsedWorkspaceRoots));
   }, [collapsedWorkspaceRoots]);
 
+  const persistedWorkspaceEditorState = useMemo(() => JSON.stringify({
+    workspaceRoots,
+    activePath,
+    openDocs: openDocs.map((doc) => ({
+      path: doc.path,
+      viewMode: doc.viewMode
+    }))
+  } satisfies PersistedWorkspaceEditorState), [activePath, openDocs, workspaceRoots]);
+
+  useEffect(() => {
+    if (!workspaceRoots.length) return;
+    if (persistedWorkspaceEditorStateRef.current === persistedWorkspaceEditorState) return;
+    persistedWorkspaceEditorStateRef.current = persistedWorkspaceEditorState;
+    localStorage.setItem(WORKSPACE_EDITOR_STATE_KEY, persistedWorkspaceEditorState);
+  }, [persistedWorkspaceEditorState, workspaceRoots.length]);
+
   useEffect(() => {
     function handlePointerDown(event: PointerEvent) {
       const target = event.target;
@@ -817,6 +954,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
         setExplorerContextMenu(null);
         setEditorTabContextMenu(null);
         setExplorerInputState(null);
+        setIsOpenClawInstallerOpen(false);
       }
     }
 
@@ -934,6 +1072,69 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
       cancelled = true;
     };
   }, [refreshList]);
+
+  useEffect(() => {
+    if (!workspaceRoots.length) return;
+    const workspaceRootsKey = JSON.stringify(workspaceRoots);
+    if (restoredWorkspaceStateKeyRef.current === workspaceRootsKey) return;
+
+    let cancelled = false;
+    const restoreState = async () => {
+      try {
+        const raw = localStorage.getItem(WORKSPACE_EDITOR_STATE_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw) as Partial<PersistedWorkspaceEditorState>;
+        if (!Array.isArray(parsed.workspaceRoots) || !Array.isArray(parsed.openDocs)) return;
+        if (JSON.stringify(parsed.workspaceRoots) !== workspaceRootsKey) return;
+
+        const validDocs = parsed.openDocs.filter((doc): doc is PersistedWorkspaceEditorState['openDocs'][number] => (
+          !!doc
+          && typeof doc.path === 'string'
+          && (doc.viewMode === 'edit' || doc.viewMode === 'preview')
+          && !!findWorkspaceRootForPath(doc.path)
+        ));
+        if (!validDocs.length) return;
+
+        const restoredDocs = await Promise.all(validDocs.map(async (doc) => {
+          try {
+            const file = await fsClient.readWorkspaceFile(doc.path);
+            return {
+              path: doc.path,
+              name: getFileName(doc.path),
+              text: file.kind === 'text' ? file.contents ?? '' : '',
+              binaryContents: file.kind === 'binary' ? file.contents : null,
+              contentsEncoding: file.contentsEncoding,
+              mimeType: file.mimeType,
+              fileState: { kind: file.kind, readOnly: file.readOnly, size: file.size },
+              dirty: false,
+              viewMode: doc.viewMode
+            } as OpenDoc;
+          } catch {
+            return null;
+          }
+        }));
+
+        if (cancelled) return;
+        const nextDocs = restoredDocs.filter((doc): doc is OpenDoc => !!doc);
+        if (!nextDocs.length) return;
+
+        setOpenDocs(nextDocs);
+        setActivePath(
+          typeof parsed.activePath === 'string' && nextDocs.some((doc) => doc.path === parsed.activePath)
+            ? parsed.activePath
+            : nextDocs[nextDocs.length - 1]?.path ?? null
+        );
+      } catch {
+        // Ignore invalid persisted editor state.
+      }
+    };
+
+    restoredWorkspaceStateKeyRef.current = workspaceRootsKey;
+    void restoreState();
+    return () => {
+      cancelled = true;
+    };
+  }, [findWorkspaceRootForPath, workspaceRoots]);
 
   const sortEntries = useCallback((items: DirEntry[]) => {
     return [...items].sort((a, b) => {
@@ -1134,12 +1335,15 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
   }, []);
 
   const removeWorkspaceRoot = useCallback(async (root: string) => {
+    setRootMenuOpenFor(null);
+    setEntryMenuOpenFor(null);
+    setExplorerContextMenu(null);
+
     try {
       const currentDocs = openDocsRef.current;
       const nextDocs = currentDocs.filter((doc) => !isPathInsideRoot(root, doc.path));
       const result = await fsClient.removeWorkspaceRoot(root);
 
-      setRootMenuOpenFor(null);
       setWorkspaceRoots(result.workspaceRoots);
       setWorkspaceRoot(result.workspaceRoot);
       setRootEntriesByRoot((prev) => {
@@ -1317,6 +1521,124 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     }
   }
 
+  async function refreshOpenClawInstallState() {
+    setIsCheckingOpenClaw(true);
+    try {
+      const [nodeResult, npmResult, openclawResult] = await Promise.all([
+        fsClient.runWorkspaceCommand('node -p "process.versions.node"', 10000),
+        fsClient.runWorkspaceCommand('npm -v', 10000),
+        fsClient.runWorkspaceCommand('openclaw --version', 10000).catch((error) => ({
+          stdout: '',
+          stderr: error instanceof Error ? error.message : 'openclaw is not installed',
+          exitCode: 1,
+          signal: null,
+          cwd: ''
+        }))
+      ]);
+
+      const nodeVersion = nodeResult.exitCode === 0 ? nodeResult.stdout.trim() : null;
+      const npmVersion = npmResult.exitCode === 0 ? npmResult.stdout.trim() : null;
+      const openclawVersion = openclawResult.exitCode === 0
+        ? (openclawResult.stdout.trim().split(/\s+/).find((part) => /^v?\d+\./.test(part)) ?? (openclawResult.stdout.trim() || null))
+        : null;
+
+      const nextState = {
+        nodeVersion,
+        npmVersion,
+        openclawVersion,
+        nodeOk: isOpenClawNodeVersionSupported(nodeVersion),
+        npmOk: npmResult.exitCode === 0
+      };
+      setOpenClawInstallState(nextState);
+      return nextState;
+    } catch (error) {
+      setOpenClawInstallLog(error instanceof Error ? error.message : 'Failed to inspect OpenClaw prerequisites');
+      return null;
+    } finally {
+      setIsCheckingOpenClaw(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!workspaceRoot) return;
+    void refreshOpenClawInstallState();
+  }, [workspaceRoot]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void fsClient.getOpenClawInstallerState().then((nextState) => {
+      if (!cancelled) {
+        setOpenClawInstallerState(nextState);
+      }
+    }).catch(() => {});
+
+    const unsubscribe = fsClient.onOpenClawInstallerEvent((nextState) => {
+      setOpenClawInstallerState(nextState);
+    });
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    const nextLog = openClawInstallerState.log || openClawInstallerState.detail || openClawInstallerState.message;
+
+    if (openClawInstallerState.status === 'success') {
+      setOpenClawInstallLog(nextLog);
+      setIsOpenClawInstallerOpen(false);
+      void refreshOpenClawInstallState();
+      return;
+    }
+
+    if (openClawInstallerState.status === 'error') {
+      setOpenClawInstallLog(nextLog);
+      return;
+    }
+
+    if (openClawInstallerState.status === 'running') {
+      setOpenClawInstallLog(nextLog);
+    }
+  }, [openClawInstallerState, refreshOpenClawInstallState]);
+
+  async function installOpenClawCli() {
+    if (isInstallingOpenClaw || openClawInstallerState.status === 'running') return;
+    setIsInstallingOpenClaw(true);
+    setOpenClawInstallLog(openClawInstallState.openclawVersion
+      ? 'Starting background OpenClaw CLI update…'
+      : 'Starting one-click OpenClaw install with default setup…');
+    try {
+      const nextState = await fsClient.startOpenClawInstaller({ update: !!openClawInstallState.openclawVersion });
+      setOpenClawInstallerState(nextState);
+      setStatus(openClawInstallState.openclawVersion ? 'Updating OpenClaw in background' : 'Installing OpenClaw in background');
+      showExplorerToast(openClawInstallState.openclawVersion ? 'OpenClaw update started' : 'OpenClaw install started');
+    } catch (error) {
+      setOpenClawInstallLog(error instanceof Error ? error.message : 'OpenClaw installation failed.');
+    } finally {
+      setIsInstallingOpenClaw(false);
+    }
+  }
+
+  async function startOpenClawOnboarding() {
+    if (!onSendCommandToTerminal) {
+      setOpenClawInstallLog('Terminal bridge unavailable. Open the integrated terminal and run: openclaw onboard --install-daemon');
+      return;
+    }
+    setIsRunningOpenClawOnboarding(true);
+    setOpenClawInstallLog('Starting OpenClaw onboarding in the integrated terminal…');
+    try {
+      await onSendCommandToTerminal('openclaw onboard --install-daemon');
+      setStatus('OpenClaw onboarding launched in terminal');
+      showExplorerToast('OpenClaw onboarding started');
+    } catch (error) {
+      setOpenClawInstallLog(error instanceof Error ? error.message : 'Failed to start OpenClaw onboarding.');
+    } finally {
+      setIsRunningOpenClawOnboarding(false);
+    }
+  }
+
   const openWorkspaceFile = useCallback(async (filePath: string, options?: { reveal?: boolean }) => {
     const root = findWorkspaceRootForPath(filePath);
     if (!root) return false;
@@ -1407,6 +1729,17 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     return true;
   }, [activateWorkspaceRoot, ensureFileVisible, findWorkspaceRootForPath, isExplorerCollapsed, workspaceRoot]);
 
+  const openMarkdownLinkedFile = useCallback(async (href: string) => {
+    if (!activeDoc) return;
+    const resolvedPath = resolveWorkspaceLinkPath(activeDoc.path, href);
+    if (!resolvedPath) return;
+    const revealed = await revealWorkspaceFile(resolvedPath);
+    const opened = await openWorkspaceFile(resolvedPath, { reveal: true });
+    if (!opened && !revealed) {
+      setStatus(`Linked file not found: ${href}`);
+    }
+  }, [activeDoc, findWorkspaceRootForPath, openWorkspaceFile, revealWorkspaceFile]);
+
   async function onOpenEntry(entry: DirEntry) {
     if (entry.kind !== 'file') return;
     setSelectedExplorerEntry(entry);
@@ -1481,7 +1814,14 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
 
   async function copyEntry(entry: DirEntry) {
     setCopiedExplorerEntry(entry);
-    showExplorerToast(`${entry.kind === 'dir' ? 'Folder' : 'File'} copied to clipboard`);
+    try {
+      await fsClient.copyWorkspaceEntryToClipboard(entry.path);
+      setStatus(entry.kind === 'dir' ? 'Folder copied' : 'File copied');
+      showExplorerToast(`${entry.kind === 'dir' ? 'Folder' : 'File'} copied to clipboard`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : `Failed to copy ${entry.kind}`);
+      showExplorerToast(`${entry.kind === 'dir' ? 'Folder' : 'File'} copied inside the app only`);
+    }
   }
 
   async function pasteEntry(targetDirOverride?: string | null) {
@@ -1602,8 +1942,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
         disabled: !selectedExplorerEntry,
         run: () => {
           if (!selectedExplorerEntry) return;
-          setCopiedExplorerEntry(selectedExplorerEntry);
-          showExplorerToast(`${selectedExplorerEntry.kind === 'dir' ? 'Folder' : 'File'} copied to clipboard`);
+          void copyEntry(selectedExplorerEntry);
         }
       },
       {
@@ -1648,7 +1987,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
         run: () => void onPickWorkspace()
       }
     ];
-  }, [canSave, copiedExplorerEntry, isExplorerCollapsed, isMacLike, onPickWorkspace, pasteEntry, selectedExplorerEntry, showExplorerToast]);
+  }, [canSave, copiedExplorerEntry, copyEntry, isExplorerCollapsed, isMacLike, onPickWorkspace, pasteEntry, selectedExplorerEntry]);
 
   useEffect(() => {
     function handleWorkspaceShortcut(event: KeyboardEvent) {
@@ -1665,9 +2004,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
 
       if (selectedExplorerEntry && hasMod && !event.altKey && !event.shiftKey && key === 'c') {
         event.preventDefault();
-        setCopiedExplorerEntry(selectedExplorerEntry);
-        setStatus(selectedExplorerEntry.kind === 'dir' ? 'Folder copied' : 'File copied');
-        showExplorerToast(`${selectedExplorerEntry.kind === 'dir' ? 'Folder' : 'File'} copied to clipboard`);
+        void copyEntry(selectedExplorerEntry);
         return;
       }
 
@@ -1677,7 +2014,10 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
         return;
       }
 
-      if (selectedExplorerEntry && ((isMacLike && event.metaKey && key === 'backspace') || (!event.metaKey && !event.ctrlKey && !event.altKey && (event.key === 'Delete' || event.key === 'Backspace')))) {
+      if (selectedExplorerEntry && (
+        (isMacLike && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && (key === 'backspace' || key === 'delete'))
+        || (!isMacLike && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key === 'Delete')
+      )) {
         event.preventDefault();
         void deleteEntry(selectedExplorerEntry);
         return;
@@ -1717,7 +2057,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     return () => {
       window.removeEventListener('keydown', handleWorkspaceShortcut);
     };
-  }, [copiedExplorerEntry, isMacLike, onPickWorkspace, onSave, onSaveAll, pasteEntry, selectedExplorerEntry, togglePreviewMode]);
+  }, [copiedExplorerEntry, copyEntry, isMacLike, onPickWorkspace, onSave, onSaveAll, pasteEntry, selectedExplorerEntry, togglePreviewMode]);
 
   useEffect(() => {
     const off = fsClient.onWorkspaceEvent((event) => {
@@ -1892,6 +2232,15 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     applyAgentPatches,
     openWorkspaceFile,
     revealWorkspaceFile,
+    openProjectPicker: onPickWorkspace,
+    async openOpenClawSetup() {
+      setOpenClawInstallLog(openClawInstallerState.log || openClawInstallerState.detail || openClawInstallerState.message || '');
+      setIsOpenClawInstallerOpen(true);
+      await refreshOpenClawInstallState();
+    },
+    refreshOpenClawInstallState,
+    installOpenClawCli,
+    startOpenClawOnboarding,
     async syncExternalWrite(filePath: string, contents: string) {
       setOpenDocs((prev) => prev.map((doc) => (
         doc.path === filePath
@@ -1911,7 +2260,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
         await refreshList(root);
       }
     }
-  }), [applyAgentPatches, findWorkspaceRootForPath, openWorkspaceFile, refreshList, requestAgentPatch, revealWorkspaceFile]);
+  }), [applyAgentPatches, findWorkspaceRootForPath, installOpenClawCli, onPickWorkspace, openClawInstallerState.detail, openClawInstallerState.log, openClawInstallerState.message, openWorkspaceFile, refreshList, refreshOpenClawInstallState, requestAgentPatch, revealWorkspaceFile, startOpenClawOnboarding]);
 
   async function toggleDir(entry: DirEntry) {
     if (entry.kind !== 'dir') return;
@@ -2242,7 +2591,6 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
     <div className="workspaceCard" ref={panelRef}>
       <div className="workspaceHeader">
         <div className="workspaceHeaderPrimary">
-          <button onClick={onPickWorkspace}>Open Project…</button>
           <div className="workspaceHeaderMeta">
             <div className="cardTitle">Project</div>
             <div className="workspacePath" title={workspaceRoot ?? 'No project selected'}>
@@ -2463,7 +2811,7 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
                       <div ref={previewBodyRef} className="markdownPreviewBody">
                         <div className="markdownPreview">
                           <Suspense fallback={<div className="footerHint">Loading preview…</div>}>
-                            <MarkdownPreviewContent markdown={activeDoc.text} />
+                            <MarkdownPreviewContent markdown={activeDoc.text} onOpenFileLink={openMarkdownLinkedFile} />
                           </Suspense>
                         </div>
                       </div>
@@ -2699,10 +3047,8 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
                   className="workspaceRootMenuItem"
                   onClick={() => {
                     if (explorerContextMenu.target.kind === 'root') return;
-                    setCopiedExplorerEntry(explorerContextMenu.target);
+                    void copyEntry(explorerContextMenu.target);
                     setExplorerContextMenu(null);
-                    setStatus(explorerContextMenu.target.kind === 'dir' ? 'Folder copied' : 'File copied');
-                    showExplorerToast(`${explorerContextMenu.target.kind === 'dir' ? 'Folder' : 'File'} copied to clipboard`);
                   }}
                   role="menuitem"
                 >
@@ -2784,6 +3130,93 @@ export const WorkspacePanel = forwardRef<WorkspacePanelHandle, {
             >
               Close Tabs to the Right
             </button>
+          </div>
+        </div>
+      ) : null}
+
+      {isOpenClawInstallerOpen ? (
+        <div className="settingsHelpOverlay explorerInputOverlay" onClick={() => setIsOpenClawInstallerOpen(false)}>
+          <div className="settingsHelpDialog explorerInputDialog" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <div className="settingsHelpDialogHeader">
+              <div className="settingsHelpDialogTitle">{openClawInstallState.openclawVersion ? 'OpenClaw' : 'OpenClaw Setup'}</div>
+              <button type="button" className="settingsHelpCloseButton" aria-label="Close" onClick={() => setIsOpenClawInstallerOpen(false)}>
+                &times;
+              </button>
+            </div>
+            <div className="explorerInputForm" style={{ display: 'grid', gap: 12 }}>
+              <div className="footerHint">
+                {openClawInstallState.openclawVersion
+                  ? (
+                    <>
+                      OpenClaw CLI is already installed locally{openClawInstallState.openclawVersion ? ` (${openClawInstallState.openclawVersion})` : ''}.
+                      You can re-check the environment, run a background CLI update, or re-run onboarding from here.
+                    </>
+                  )
+                  : (
+                    <>
+                      One click will install OpenClaw in the background and run the default QuickStart onboarding automatically.
+                      Any required setup choices will use OpenClaw&apos;s default options.
+                    </>
+                  )}
+              </div>
+
+              {openClawInstallerState.status !== 'idle' ? (
+                <div className={openClawInstallerState.status === 'error' ? 'settingsUpdateStatus' : 'settingsUpdateStatus available'}>
+                  <div className="settingsUpdateStatusTitle">{openClawInstallerState.message}</div>
+                  <div className="settingsUpdateStatusMeta">{openClawInstallerState.detail ?? 'Background OpenClaw installer is running.'}</div>
+                  {openClawInstallerState.status === 'running' ? (
+                    <div className="settingsDownloadProgress">
+                      <div className="settingsDownloadProgressRow">
+                        <span>{openClawInstallerState.mode === 'update' ? 'Update task' : 'Install task'}</span>
+                        <span>{openClawInstallerState.percent !== null ? `${Math.round(openClawInstallerState.percent)}%` : 'Working…'}</span>
+                      </div>
+                      <div className="settingsDownloadProgressBar" aria-hidden="true">
+                        <span style={{ width: `${Math.max(8, openClawInstallerState.percent ?? 12)}%` }} />
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              <div style={{ display: 'grid', gap: 6 }}>
+                <div className="explorerInputMeta">Environment</div>
+                <div className="footerHint">Node: {isCheckingOpenClaw ? 'Checking…' : openClawInstallState.nodeVersion ?? 'Not found'}</div>
+                <div className="footerHint">npm: {isCheckingOpenClaw ? 'Checking…' : openClawInstallState.npmVersion ?? 'Not found'}</div>
+                <div className="footerHint">OpenClaw CLI: {isCheckingOpenClaw ? 'Checking…' : openClawInstallState.openclawVersion ?? 'Not installed'}</div>
+                <div className="footerHint">
+                  Requirement: Node <code>&gt;=22.12.0</code>
+                  {!isCheckingOpenClaw && !openClawInstallState.nodeOk ? ' (current Node version is too old or missing)' : ''}
+                </div>
+              </div>
+
+              {openClawInstallLog ? (
+                <textarea readOnly rows={8} value={openClawInstallLog} className="explorerInputField" />
+              ) : null}
+
+              <div className="explorerInputActions">
+                <button type="button" onClick={() => void refreshOpenClawInstallState()} disabled={isCheckingOpenClaw || isInstallingOpenClaw || isRunningOpenClawOnboarding || openClawInstallerState.status === 'running'}>
+                  {isCheckingOpenClaw ? 'Checking…' : 'Refresh'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void installOpenClawCli()}
+                  disabled={isCheckingOpenClaw || isInstallingOpenClaw || isRunningOpenClawOnboarding || openClawInstallerState.status === 'running' || !openClawInstallState.nodeOk || !openClawInstallState.npmOk}
+                >
+                  {openClawInstallerState.status === 'running'
+                    ? openClawInstallState.openclawVersion ? 'Updating…' : 'Installing…'
+                    : openClawInstallState.openclawVersion ? 'Update CLI in Background' : 'One-click Install'}
+                </button>
+                {openClawInstallState.openclawVersion ? (
+                  <button
+                    type="button"
+                    onClick={() => void startOpenClawOnboarding()}
+                    disabled={isCheckingOpenClaw || isInstallingOpenClaw || isRunningOpenClawOnboarding || openClawInstallerState.status === 'running' || !openClawInstallState.openclawVersion}
+                  >
+                    {isRunningOpenClawOnboarding ? 'Launching…' : 'Run Onboarding'}
+                  </button>
+                ) : null}
+              </div>
+            </div>
           </div>
         </div>
       ) : null}

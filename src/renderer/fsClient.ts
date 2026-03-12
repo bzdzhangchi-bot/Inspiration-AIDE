@@ -3,27 +3,27 @@ type WorkspaceEvent =
   | { type: 'changed'; eventType: string; path: string }
   | { type: 'error'; message: string };
 
-export type ClaudeMemoryFile = {
+export type AgentMemoryFile = {
   id: string;
   path: string;
   displayPath: string;
   relativePath: string;
   name: string;
   scope: 'user' | 'project' | 'auto';
-  kind: 'claude' | 'local' | 'rule' | 'memory';
+  kind: 'agent' | 'local' | 'rule' | 'memory';
   lineCount: number;
   preview: string;
   updatedAt: number;
   size: number;
 };
 
-export type ClaudeMemorySnapshot = {
+export type AgentMemorySnapshot = {
   workspaceRoot: string;
   projectKey: string;
   autoMemoryEnabled: boolean;
   autoMemoryRoot: string;
-  instructionFiles: ClaudeMemoryFile[];
-  autoMemoryFiles: ClaudeMemoryFile[];
+  instructionFiles: AgentMemoryFile[];
+  autoMemoryFiles: AgentMemoryFile[];
   notices: string[];
 };
 
@@ -74,6 +74,23 @@ export type GitCommitResult = {
   output: string;
 };
 
+export type OpenClawInstallerState = {
+  status: 'idle' | 'running' | 'success' | 'error';
+  mode: 'install' | 'update';
+  step: 'idle' | 'preflight' | 'installing-cli' | 'onboarding' | 'verifying' | 'completed' | 'failed';
+  message: string;
+  detail: string | null;
+  log: string;
+  percent: number | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  openClawVersion: string | null;
+};
+
+export type AppCommandEvent = {
+  type: 'open-project';
+};
+
 export const fsClient = {
   async selectWorkspaceFolder(): Promise<string | null> {
     return window.assistantDesk.selectWorkspaceFolder();
@@ -93,6 +110,14 @@ export const fsClient = {
 
   async getGitRepository(workspaceRoot: string): Promise<GitRepositorySnapshot> {
     return window.assistantDesk.getGitRepository(workspaceRoot);
+  },
+
+  async getOpenClawInstallerState(): Promise<OpenClawInstallerState> {
+    return window.assistantDesk.getOpenClawInstallerState();
+  },
+
+  async startOpenClawInstaller(options?: { update?: boolean }): Promise<OpenClawInstallerState> {
+    return window.assistantDesk.startOpenClawInstaller(options);
   },
 
   async getGitDiff(workspaceRoot: string, filePath: string, staged = false): Promise<GitDiffSnapshot> {
@@ -159,6 +184,10 @@ export const fsClient = {
     return window.assistantDesk.copyWorkspaceEntry(sourcePath, destinationPath);
   },
 
+  async copyWorkspaceEntryToClipboard(targetPath: string): Promise<void> {
+    return window.assistantDesk.copyWorkspaceEntryToClipboard(targetPath);
+  },
+
   async deleteWorkspaceEntry(targetPath: string): Promise<void> {
     return window.assistantDesk.deleteWorkspaceEntry(targetPath);
   },
@@ -171,19 +200,27 @@ export const fsClient = {
     return window.assistantDesk.openArbitraryTextFile();
   },
 
-  async getClaudeMemorySnapshot(workspaceRoot?: string | null): Promise<ClaudeMemorySnapshot> {
-    return window.assistantDesk.getClaudeMemorySnapshot(workspaceRoot);
+  async getAgentMemorySnapshot(workspaceRoot?: string | null): Promise<AgentMemorySnapshot> {
+    return window.assistantDesk.getAgentMemorySnapshot(workspaceRoot);
   },
 
-  async readClaudeMemoryFile(filePath: string, workspaceRoot?: string | null): Promise<string> {
-    return window.assistantDesk.readClaudeMemoryFile(filePath, workspaceRoot);
+  async readAgentMemoryFile(filePath: string, workspaceRoot?: string | null): Promise<string> {
+    return window.assistantDesk.readAgentMemoryFile(filePath, workspaceRoot);
   },
 
-  async revealClaudePath(filePath: string, workspaceRoot?: string | null): Promise<boolean> {
-    return window.assistantDesk.revealClaudePath(filePath, workspaceRoot);
+  async revealAgentPath(filePath: string, workspaceRoot?: string | null): Promise<boolean> {
+    return window.assistantDesk.revealAgentPath(filePath, workspaceRoot);
   },
 
   onWorkspaceEvent(listener: (event: WorkspaceEvent) => void) {
     return window.assistantDesk.onWorkspaceEvent(listener);
+  },
+
+  onAppCommand(listener: (event: AppCommandEvent) => void) {
+    return window.assistantDesk.onAppCommand(listener);
+  },
+
+  onOpenClawInstallerEvent(listener: (state: OpenClawInstallerState) => void) {
+    return window.assistantDesk.onOpenClawInstallerEvent(listener);
   }
 };

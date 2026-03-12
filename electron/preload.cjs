@@ -4,6 +4,8 @@ contextBridge.exposeInMainWorld('assistantDesk', {
   getAppInfo: () => ipcRenderer.invoke('app:getInfo'),
   checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
   downloadLatestUpdate: () => ipcRenderer.invoke('app:downloadLatestUpdate'),
+  getOpenClawInstallerState: () => ipcRenderer.invoke('openclaw-installer:getState'),
+  startOpenClawInstaller: (options) => ipcRenderer.invoke('openclaw-installer:start', options),
   selectWorkspaceFolder: () => ipcRenderer.invoke('workspace:selectFolder'),
   getWorkspaceRoot: () => ipcRenderer.invoke('workspace:getRoot'),
   getWorkspaceRoots: () => ipcRenderer.invoke('workspace:getRoots'),
@@ -25,11 +27,12 @@ contextBridge.exposeInMainWorld('assistantDesk', {
   createWorkspaceFile: (filePath, contents) => ipcRenderer.invoke('fs:createWorkspaceFile', { filePath, contents }),
   createWorkspaceDir: (dirPath) => ipcRenderer.invoke('fs:createWorkspaceDir', { dirPath }),
   copyWorkspaceEntry: (sourcePath, destinationPath) => ipcRenderer.invoke('fs:copyWorkspaceEntry', { sourcePath, destinationPath }),
+  copyWorkspaceEntryToClipboard: (targetPath) => ipcRenderer.invoke('fs:copyWorkspaceEntryToClipboard', { targetPath }),
   deleteWorkspaceEntry: (targetPath) => ipcRenderer.invoke('fs:deleteWorkspaceEntry', { targetPath }),
   openArbitraryTextFile: () => ipcRenderer.invoke('fs:openArbitraryTextFile'),
-  getClaudeMemorySnapshot: (workspaceRoot) => ipcRenderer.invoke('claude:getMemorySnapshot', { workspaceRoot }),
-  readClaudeMemoryFile: (filePath, workspaceRoot) => ipcRenderer.invoke('claude:readMemoryFile', { filePath, workspaceRoot }),
-  revealClaudePath: (filePath, workspaceRoot) => ipcRenderer.invoke('claude:revealPath', { filePath, workspaceRoot }),
+  getAgentMemorySnapshot: (workspaceRoot) => ipcRenderer.invoke('agent:getMemorySnapshot', { workspaceRoot }),
+  readAgentMemoryFile: (filePath, workspaceRoot) => ipcRenderer.invoke('agent:readMemoryFile', { filePath, workspaceRoot }),
+  revealAgentPath: (filePath, workspaceRoot) => ipcRenderer.invoke('agent:revealPath', { filePath, workspaceRoot }),
   getTerminalState: () => ipcRenderer.invoke('terminal:getState'),
   createTerminalSession: (cwd, title) => ipcRenderer.invoke('terminal:createSession', { cwd, title }),
   setActiveTerminalSession: (sessionId) => ipcRenderer.invoke('terminal:setActiveSession', { sessionId }),
@@ -54,5 +57,15 @@ contextBridge.exposeInMainWorld('assistantDesk', {
     const wrapped = (_event, payload) => listener(payload);
     ipcRenderer.on('app-update:event', wrapped);
     return () => ipcRenderer.removeListener('app-update:event', wrapped);
+  },
+  onAppCommand: (listener) => {
+    const wrapped = (_event, payload) => listener(payload);
+    ipcRenderer.on('app:command', wrapped);
+    return () => ipcRenderer.removeListener('app:command', wrapped);
+  },
+  onOpenClawInstallerEvent: (listener) => {
+    const wrapped = (_event, payload) => listener(payload);
+    ipcRenderer.on('openclaw-installer:event', wrapped);
+    return () => ipcRenderer.removeListener('openclaw-installer:event', wrapped);
   }
 });

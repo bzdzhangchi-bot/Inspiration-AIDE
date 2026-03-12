@@ -31,11 +31,12 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-row: 1;
+  position: relative;
 }
 
 .contentBody.withSideRail {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 52px;
+  grid-template-columns: minmax(0, 1fr) 58px;
   align-items: stretch;
 }
 
@@ -58,18 +59,22 @@
   min-height: 0;
   display: grid;
   align-content: start;
-  gap: 6px;
-  padding: 10px 6px 8px 0;
+  justify-items: center;
+  gap: 7px;
+  padding: 11px 8px 10px 2px;
   border-left: 1px solid color-mix(in srgb, var(--border) 86%, var(--text) 4%);
 }
 
 .appSideRailItem {
-  width: 100%;
+  width: 44px;
   display: grid;
+  grid-template-rows: auto auto auto;
+  align-content: start;
   justify-items: center;
-  gap: 3px;
-  padding: 6px 2px;
-  border-radius: 12px;
+  gap: 4px;
+  min-height: 62px;
+  padding: 6px 3px 5px;
+  border-radius: 10px;
   border: 1px solid color-mix(in srgb, var(--border) 84%, var(--text) 6%);
   background: color-mix(in srgb, var(--panel) 88%, var(--text) 3%);
   color: var(--text);
@@ -96,19 +101,21 @@
 }
 
 .appSideRailGlyph {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 9px;
+  border-radius: 7px;
   background: color-mix(in srgb, var(--panel-2) 82%, var(--text) 4%);
   color: inherit;
+  flex-shrink: 0;
 }
 
 .appSideRailGlyph svg {
-  width: 12px;
-  height: 12px;
+  width: 11px;
+  height: 11px;
+  display: block;
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;
@@ -116,16 +123,23 @@
 }
 
 .appSideRailText {
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
+  max-width: 100%;
+  font-size: 6.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 1.15;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
 }
 
 .appSideRailMeta {
-  font-size: 7px;
+  font-size: 5.5px;
   color: var(--muted);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.12em;
+  line-height: 1;
+  opacity: 0.82;
 }
 
 .sidebar {
@@ -215,6 +229,7 @@
 .statusBar {
   grid-column: 1 / -1;
   grid-row: 2;
+  position: relative;
   display: flex;
   align-items: stretch;
   justify-content: space-between;
@@ -249,6 +264,194 @@
 
 .statusBarItem:hover {
   background: var(--statusbar-hover);
+}
+
+.statusBarInstallerDock {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+
+.statusBarInstallerDock.running {
+  color: var(--statusbar-fg);
+}
+
+.statusBarInstallerDock.success {
+  color: color-mix(in srgb, #8ee59a 86%, var(--statusbar-fg));
+}
+
+.statusBarInstallerDock.error {
+  color: color-mix(in srgb, #ff9b95 88%, var(--statusbar-fg));
+}
+
+.statusBarInstallerChip {
+  position: relative;
+  min-width: 160px;
+  max-width: 220px;
+  display: inline-grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  height: 22px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  appearance: none;
+  cursor: pointer;
+}
+
+.statusBarInstallerChip:hover,
+.statusBarInstallerChip.open {
+  background: var(--statusbar-hover);
+}
+
+.statusBarInstallerChipLabel,
+.statusBarInstallerChipMeta {
+  white-space: nowrap;
+}
+
+.statusBarInstallerChipLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+
+.statusBarInstallerChipMeta {
+  color: color-mix(in srgb, currentColor 84%, transparent);
+  font-size: 10px;
+}
+
+.statusBarInstallerChipProgress {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 2px;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 18%, transparent);
+}
+
+.statusBarInstallerChipProgress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 84%, white 16%), color-mix(in srgb, #7dd3fc 72%, var(--accent)));
+}
+
+.statusBarInstallerPopover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  width: min(320px, calc(100vw - 28px));
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 92%, #0b1117 8%);
+  border: 1px solid color-mix(in srgb, var(--statusbar-fg) 12%, transparent);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.28);
+  z-index: 40;
+}
+
+.statusBarInstallerPopoverHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.statusBarInstallerPopoverTitle {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.statusBarInstallerPopoverState {
+  margin-top: 2px;
+  font-size: 11px;
+  color: color-mix(in srgb, currentColor 82%, transparent);
+}
+
+.statusBarInstallerLabel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.statusBarInstallerMeta {
+  font-size: 11px;
+  color: color-mix(in srgb, var(--statusbar-fg) 76%, transparent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.statusBarInstallerDetail {
+  font-size: 11px;
+  line-height: 1.35;
+  color: color-mix(in srgb, var(--statusbar-fg) 72%, transparent);
+}
+
+.statusBarInstallerProgress {
+  width: 100%;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--statusbar-fg) 18%, transparent);
+}
+
+.statusBarInstallerProgress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 84%, white 16%), color-mix(in srgb, #7dd3fc 72%, var(--accent)));
+}
+
+.statusBarInstallerActions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 2px;
+}
+
+.statusBarInstallerButton {
+  appearance: none;
+  border: 0;
+  background: color-mix(in srgb, var(--statusbar-fg) 14%, transparent);
+  color: inherit;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.statusBarInstallerButton:hover {
+  background: color-mix(in srgb, var(--statusbar-fg) 22%, transparent);
+}
+
+.statusBarInstallerGhostButton {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: color-mix(in srgb, currentColor 80%, transparent);
+  border-radius: 8px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.statusBarInstallerGhostButton:hover {
+  background: color-mix(in srgb, var(--statusbar-fg) 14%, transparent);
+  color: inherit;
 }
 
 .statusBarSep {
@@ -1523,7 +1726,10 @@
 }
 
 .chatPage {
+  width: 100%;
+  min-width: 0;
   height: 100%;
+  overflow-x: clip;
 }
 
 .chatCard,
@@ -1535,13 +1741,14 @@
 }
 
 .workspaceWithDrawer {
+  --assistant-side-bar-width: 52px;
+  --assistant-drawer-width: 520px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   height: 100%;
   min-height: 0;
   position: relative;
-}
-
-.workspaceWithDrawer.immersiveMode {
-  display: block;
 }
 
 .workspaceMain {
@@ -1550,9 +1757,9 @@
   min-height: 0;
 }
 
-.chatImmersiveMain {
-  height: 100%;
-  min-height: 0;
+.workspaceWithDrawer.immersiveChatMode .workspaceMain {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .chatDrawer {
@@ -1568,8 +1775,21 @@
   transition: width 140ms ease;
 }
 
+.chatDrawer.noTransition {
+  transition: none;
+}
+
+.chatDrawer.resizing {
+  transition: none;
+}
+
 .chatDrawer.open {
   pointer-events: auto;
+}
+
+.chatDrawer.immersiveOpen {
+  inset: 0;
+  z-index: 26;
 }
 
 .chatResizeHandle {
@@ -1580,6 +1800,7 @@
   height: 100%;
   cursor: col-resize;
   z-index: 3;
+  touch-action: none;
 }
 
 .chatResizeHandle::after {
@@ -1599,6 +1820,10 @@
   opacity: 1;
 }
 
+.chatDrawer.immersiveOpen .chatResizeHandle {
+  display: none;
+}
+
 .chatDrawer.open,
 .chatCard {
   min-height: 0;
@@ -1606,6 +1831,7 @@
 
 .chatCard {
   --assistant-side-bar-width: 52px;
+  box-sizing: border-box;
   position: relative;
   height: 100%;
   min-height: 0;
@@ -1618,6 +1844,13 @@
   gap: 6px;
   box-shadow: var(--shadow-1);
   overflow: hidden;
+}
+
+.chatCard.immersiveChatCard {
+  border-radius: 0;
+  border: 0;
+  box-shadow: none;
+  padding: 16px calc(24px + var(--assistant-side-bar-width)) 16px 16px;
 }
 
 .chatHeader {
@@ -1659,6 +1892,19 @@
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.chatHeaderActionButtons > button,
+.chatHeaderControls > .chatProfileSelect {
+  min-height: 36px;
+  height: 36px;
+  box-sizing: border-box;
+  border-radius: 10px;
+}
+
+.chatHeaderActionButtons > button {
+  padding: 0 12px;
+  line-height: 1;
 }
 
 .assistantLayoutToggle {
@@ -1755,6 +2001,12 @@
   min-width: 220px;
   width: 100%;
   max-width: none;
+  appearance: none;
+  padding-left: 12px;
+  padding-right: 36px;
+  padding-top: 0;
+  padding-bottom: 0;
+  line-height: 34px;
 }
 
 .chatStatus {
@@ -1863,76 +2115,7 @@
   cursor: not-allowed;
 }
 
-.immersiveWorkspaceBackdrop {
-  position: absolute;
-  inset: 0;
-  border: 0;
-  padding: 0;
-  margin: 0;
-  background: color-mix(in srgb, #000 24%, transparent);
-  opacity: 0;
-  pointer-events: none;
-  z-index: 18;
-  transition: opacity 140ms ease;
-}
-
-.immersiveWorkspaceBackdrop.open {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.immersiveWorkspacePanel {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  bottom: 12px;
-  width: min(520px, calc(100% - 24px));
-  transform: translateX(calc(100% + 18px));
-  opacity: 0;
-  pointer-events: none;
-  z-index: 19;
-  transition: transform 180ms ease, opacity 180ms ease;
-}
-
-.immersiveWorkspacePanel.open {
-  transform: translateX(0);
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.immersiveWorkspaceShell {
-  height: 100%;
-  min-height: 0;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  border: 1px solid color-mix(in srgb, var(--border) 86%, var(--text) 4%);
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--panel-2) 94%, var(--bg) 6%);
-  box-shadow: var(--shadow-1);
-  overflow: hidden;
-}
-
-.immersiveWorkspaceHeader {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 14px;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 84%, var(--text) 5%);
-  background: color-mix(in srgb, var(--panel) 82%, var(--text) 3%);
-}
-
-.immersiveWorkspaceActions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.immersiveWorkspaceBody {
-  min-height: 0;
-}
-
-.claudeSkillsPanel {
+.agentSkillsPanel {
   display: grid;
   gap: 8px;
   padding: 12px;
@@ -1998,7 +2181,7 @@
   top: 10px;
   right: calc(10px + var(--assistant-side-bar-width) + 8px);
   bottom: 10px;
-  width: min(520px, calc(100% - 28px - var(--assistant-side-bar-width)));
+  width: min(var(--assistant-drawer-width), calc(100% - 28px - var(--assistant-side-bar-width)));
   transform: translateX(calc(100% + 16px));
   opacity: 0;
   pointer-events: none;
@@ -2019,13 +2202,13 @@
   pointer-events: auto;
 }
 
-.skillsDrawerPanel .claudeSkillsPanel {
+.skillsDrawerPanel .agentSkillsPanel {
   height: 100%;
   overflow: auto;
   grid-template-rows: auto auto 1fr;
 }
 
-.claudeMemoryPanel {
+.agentMemoryPanel {
   height: 100%;
   display: grid;
   grid-template-rows: auto auto auto minmax(0, 1fr);
@@ -2038,7 +2221,7 @@
   overflow: auto;
 }
 
-.claudeInspectorPanel {
+.agentInspectorPanel {
   height: 100%;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
@@ -2050,14 +2233,14 @@
   box-shadow: var(--shadow-1);
 }
 
-.claudeInspectorHeader {
+.agentInspectorHeader {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
 }
 
-.claudeInspectorActions {
+.agentInspectorActions {
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
@@ -2065,13 +2248,13 @@
   gap: 8px;
 }
 
-.claudeInspectorTabs {
+.agentInspectorTabs {
   display: inline-flex;
   gap: 8px;
   flex-wrap: wrap;
 }
 
-.claudeInspectorTab {
+.agentInspectorTab {
   border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--border) 84%, var(--text) 6%);
   background: color-mix(in srgb, var(--panel-2) 84%, var(--text) 4%);
@@ -2080,13 +2263,13 @@
   font-size: 12px;
 }
 
-.claudeInspectorTab.active {
+.agentInspectorTab.active {
   color: var(--text);
   border-color: color-mix(in srgb, var(--accent) 54%, var(--border));
   background: color-mix(in srgb, var(--accent) 16%, var(--panel-2));
 }
 
-.claudeInspectorBody {
+.agentInspectorBody {
   min-height: 0;
   overflow: auto;
   display: grid;
@@ -2095,13 +2278,13 @@
   padding-right: 2px;
 }
 
-.claudeInspectorSummaryGrid {
+.agentInspectorSummaryGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
-.claudeInspectorSectionCallout {
+.agentInspectorSectionCallout {
   display: grid;
   gap: 4px;
   padding: 10px;
@@ -2110,17 +2293,17 @@
   background: color-mix(in srgb, var(--panel-2) 82%, var(--text) 3%);
 }
 
-.claudeInspectorSectionCalloutMeta {
+.agentInspectorSectionCalloutMeta {
   font-size: 11px;
   color: var(--muted);
 }
 
-.claudeInspectorTimelineList {
+.agentInspectorTimelineList {
   display: grid;
   gap: 6px;
 }
 
-.claudeInspectorTimelineItem {
+.agentInspectorTimelineItem {
   display: grid;
   gap: 2px;
   padding: 8px 10px;
@@ -2128,7 +2311,7 @@
   background: color-mix(in srgb, var(--panel) 80%, var(--text) 4%);
 }
 
-.claudeInspectorToolEvent {
+.agentInspectorToolEvent {
   display: grid;
   gap: 6px;
   padding: 8px 10px;
@@ -2137,12 +2320,12 @@
   background: color-mix(in srgb, var(--panel) 80%, var(--text) 4%);
 }
 
-.claudeInspectorToolEvent.isError {
+.agentInspectorToolEvent.isError {
   border-color: color-mix(in srgb, #d94841 48%, var(--border));
   background: color-mix(in srgb, #d94841 9%, var(--panel));
 }
 
-.claudeInspectorToolBadge {
+.agentInspectorToolBadge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2157,42 +2340,42 @@
   letter-spacing: 0.04em;
 }
 
-.claudeInspectorTimelineTop {
+.agentInspectorTimelineTop {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
 
-.claudeInspectorTimelineLabel {
+.agentInspectorTimelineLabel {
   font-size: 12px;
   color: var(--text);
   word-break: break-word;
 }
 
-.claudeInspectorTimelineTime {
+.agentInspectorTimelineTime {
   font-size: 11px;
   color: var(--muted);
   white-space: nowrap;
 }
 
-.claudeInspectorSummaryList {
+.agentInspectorSummaryList {
   display: grid;
   gap: 4px;
 }
 
-.claudeInspectorSummaryLine {
+.agentInspectorSummaryLine {
   font-size: 12px;
   line-height: 1.5;
   color: color-mix(in srgb, var(--text) 92%, var(--muted));
 }
 
-.claudeInspectorEmbeddedPanel {
+.agentInspectorEmbeddedPanel {
   height: auto;
   overflow: visible;
 }
 
-.claudeInspectorViewer {
+.agentInspectorViewer {
   display: grid;
   gap: 8px;
   padding: 10px;
@@ -2201,14 +2384,142 @@
   background: color-mix(in srgb, var(--panel-2) 82%, var(--text) 3%);
 }
 
-.claudeInspectorViewerHeader {
+.agentInspectorViewerHeader {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
 }
 
-.claudeInspectorViewerContent {
+.agentExecutionTrace {
+  display: grid;
+  gap: 8px;
+}
+
+.agentExecutionTraceLanes {
+  display: grid;
+  grid-template-columns: 84px 24px 96px minmax(0, 1fr);
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.agentExecutionTraceList {
+  display: grid;
+  gap: 8px;
+}
+
+.agentExecutionTraceStep {
+  display: grid;
+  grid-template-columns: 84px 24px 96px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.agentExecutionTraceActor {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--border) 84%, var(--text) 8%);
+  background: color-mix(in srgb, var(--panel) 86%, var(--text) 4%);
+  font-size: 11px;
+  color: var(--text);
+  text-transform: capitalize;
+}
+
+.agentExecutionTraceActor.actor-user {
+  background: color-mix(in srgb, #61afef 14%, var(--panel));
+}
+
+.agentExecutionTraceActor.actor-agent {
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+}
+
+.agentExecutionTraceActor.actor-tools {
+  background: color-mix(in srgb, #8ec07c 14%, var(--panel));
+}
+
+.agentExecutionTraceArrow {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+
+.agentExecutionTraceCard {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 9px 10px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, var(--text) 6%);
+  background: color-mix(in srgb, var(--panel) 82%, var(--text) 3%);
+}
+
+.agentExecutionTraceSummary {
+  display: grid;
+  gap: 4px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.agentExecutionTraceSummary::-webkit-details-marker {
+  display: none;
+}
+
+.agentExecutionTraceSummaryTop {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.agentExecutionTraceMetaRow {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.agentExecutionTraceTitle {
+  font-size: 12px;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.agentExecutionTraceDetail {
+  margin: 6px 0 0;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, var(--text) 6%);
+  background: color-mix(in srgb, var(--panel-2) 84%, var(--text) 3%);
+  font: 12px/1.55 var(--font-editor);
+  color: color-mix(in srgb, var(--text) 94%, var(--muted));
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.agentExecutionTraceStep.tone-success .agentExecutionTraceCard {
+  border-color: color-mix(in srgb, #8ec07c 42%, var(--border));
+}
+
+.agentExecutionTraceStep.tone-error .agentExecutionTraceCard {
+  border-color: color-mix(in srgb, #d94841 42%, var(--border));
+  background: color-mix(in srgb, #d94841 8%, var(--panel));
+}
+
+.agentInspectorViewerContent {
   margin: 0;
   padding: 10px;
   border-radius: 10px;
@@ -2222,25 +2533,26 @@
   overflow: auto;
 }
 
-.claudeMemoryHeader {
+.agentMemoryHeader {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
 }
 
-.claudeMemoryActions {
+.agentMemoryActions {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
-.claudeMemorySummaryGrid {
+.agentMemorySummaryGrid {
   display: grid;
   gap: 8px;
 }
 
-.claudeMemorySummaryCard {
+.agentMemorySummaryCard {
   display: grid;
   gap: 3px;
   padding: 9px 10px;
@@ -2249,25 +2561,25 @@
   background: color-mix(in srgb, var(--panel-2) 82%, var(--text) 3%);
 }
 
-.claudeMemorySummaryLabel {
+.agentMemorySummaryLabel {
   font-size: 11px;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 
-.claudeMemorySummaryValue {
+.agentMemorySummaryValue {
   font-size: 12px;
   color: var(--text);
   word-break: break-word;
 }
 
-.claudeMemoryNoticeGroup {
+.agentMemoryNoticeGroup {
   display: grid;
   gap: 6px;
 }
 
-.claudeMemoryNotice {
+.agentMemoryNotice {
   padding: 8px 10px;
   border-radius: 9px;
   border: 1px solid color-mix(in srgb, var(--border) 82%, var(--text) 8%);
@@ -2276,30 +2588,30 @@
   font-size: 12px;
 }
 
-.claudeMemoryNotice.error {
+.agentMemoryNotice.error {
   border-color: color-mix(in srgb, #d65d5d 52%, var(--border));
   background: color-mix(in srgb, #d65d5d 12%, var(--panel-2));
   color: color-mix(in srgb, #d65d5d 88%, var(--text));
 }
 
-.claudeMemorySection {
+.agentMemorySection {
   display: grid;
   gap: 8px;
 }
 
-.claudeMemorySectionHeader {
+.agentMemorySectionHeader {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
 
-.claudeMemoryList {
+.agentMemoryList {
   display: grid;
   gap: 8px;
 }
 
-.claudeMemoryItem {
+.agentMemoryItem {
   display: grid;
   gap: 5px;
   padding: 10px;
@@ -2308,7 +2620,7 @@
   background: color-mix(in srgb, var(--panel-2) 84%, var(--text) 3%);
 }
 
-.claudeMemoryItemBody {
+.agentMemoryItemBody {
   display: grid;
   gap: 5px;
   padding: 0;
@@ -2318,25 +2630,113 @@
   text-align: left;
 }
 
-.claudeMemoryItemActions {
+.agentMemoryItemActions {
   display: inline-flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.claudeMemoryActionButton {
+.agentMemoryActionButton {
   padding: 4px 10px;
   border-radius: 999px;
   font-size: 11px;
 }
 
-.claudeMemoryItemTop {
+.openClawDrawerPanel {
+  grid-template-rows: auto auto auto auto auto auto minmax(0, 1fr);
+}
+
+.openClawDrawerShell {
+  right: 10px;
+  width: min(var(--assistant-drawer-width), calc(100% - 20px));
+}
+
+.openClawDrawerHeaderBrand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.openClawDrawerLogo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  color: color-mix(in srgb, var(--accent) 76%, var(--text));
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel-2));
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+
+.openClawDrawerLogo svg {
+  width: 22px;
+  height: 22px;
+}
+
+.openClawDrawerSummaryGrid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.openClawDrawerSummaryGrid.compact {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.openClawEndpointLink {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel-2));
+  color: color-mix(in srgb, var(--accent) 88%, white 6%);
+  text-decoration: none;
+  word-break: break-all;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.openClawEndpointLink:hover {
+  text-decoration: none;
+  background: color-mix(in srgb, var(--accent) 24%, var(--panel-2));
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
+}
+
+.openClawDashboardValue {
+  align-items: stretch;
+}
+
+.openClawDashboardButton {
+  min-height: 30px;
+  padding: 5px 10px;
+  border-radius: 9px;
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--accent) 18%, transparent);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 88%, #ffffff 12%), color-mix(in srgb, #0ea5e9 72%, var(--accent)));
+  border-color: color-mix(in srgb, var(--accent) 70%, #0ea5e9 30%);
+  color: white;
+}
+
+.openClawDashboardButton:hover:not(:disabled) {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 94%, #ffffff 6%), color-mix(in srgb, #0284c7 78%, var(--accent)));
+  border-color: color-mix(in srgb, var(--accent) 82%, #0284c7 18%);
+}
+
+.openClawDashboardButton:disabled {
+  box-shadow: none;
+}
+
+.openClawIssueList {
+  display: grid;
+  gap: 8px;
+}
+
+.agentMemoryItemTop {
   display: inline-flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
-.claudeMemoryBadge {
+.agentMemoryBadge {
   display: inline-flex;
   width: fit-content;
   padding: 1px 7px;
@@ -2346,37 +2746,37 @@
   letter-spacing: 0.04em;
 }
 
-.claudeMemoryBadge.scope-project {
+.agentMemoryBadge.scope-project {
   color: color-mix(in srgb, #61afef 88%, var(--text));
   background: color-mix(in srgb, #61afef 16%, var(--panel));
 }
 
-.claudeMemoryBadge.scope-user {
+.agentMemoryBadge.scope-user {
   color: color-mix(in srgb, #d79921 88%, var(--text));
   background: color-mix(in srgb, #d79921 16%, var(--panel));
 }
 
-.claudeMemoryBadge.scope-auto {
+.agentMemoryBadge.scope-auto {
   color: color-mix(in srgb, #8ec07c 88%, var(--text));
   background: color-mix(in srgb, #8ec07c 16%, var(--panel));
 }
 
-.claudeMemoryBadge.kind-claude,
-.claudeMemoryBadge.kind-local,
-.claudeMemoryBadge.kind-rule,
-.claudeMemoryBadge.kind-memory {
+.agentMemoryBadge.kind-agent,
+.agentMemoryBadge.kind-local,
+.agentMemoryBadge.kind-rule,
+.agentMemoryBadge.kind-memory {
   color: var(--muted);
   background: color-mix(in srgb, var(--text) 8%, var(--panel));
 }
 
-.claudeMemoryItemTitle {
+.agentMemoryItemTitle {
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
   word-break: break-word;
 }
 
-.claudeMemoryPreview {
+.agentMemoryPreview {
   margin: 0;
   padding: 8px 9px;
   border-radius: 8px;
@@ -2390,7 +2790,7 @@
   overflow: auto;
 }
 
-.claudeMemoryEmpty {
+.agentMemoryEmpty {
   padding: 10px;
   border-radius: 9px;
   border: 1px dashed color-mix(in srgb, var(--border) 82%, var(--text) 10%);
@@ -2525,19 +2925,19 @@
   color: color-mix(in srgb, #8ec07c 84%, var(--text));
 }
 
-.claudeSkillsHeader {
+.agentSkillsHeader {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 8px;
 }
 
-.claudeSkillsList {
+.agentSkillsList {
   display: grid;
   gap: 6px;
 }
 
-.claudeSkillsItem {
+.agentSkillsItem {
   display: grid;
   gap: 3px;
   padding: 8px;
@@ -2546,7 +2946,7 @@
   background: color-mix(in srgb, var(--panel-2) 82%, var(--text) 3%);
 }
 
-.claudeSkillsItemBody {
+.agentSkillsItemBody {
   display: grid;
   gap: 3px;
   padding: 0;
@@ -2556,14 +2956,14 @@
   text-align: left;
 }
 
-.claudeSkillsActions {
+.agentSkillsActions {
   display: inline-flex;
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 2px;
 }
 
-.claudeSkillsBadge {
+.agentSkillsBadge {
   display: inline-flex;
   width: fit-content;
   padding: 1px 7px;
@@ -2573,22 +2973,22 @@
   letter-spacing: 0.04em;
 }
 
-.claudeSkillsBadge.source-workspace {
+.agentSkillsBadge.source-workspace {
   color: color-mix(in srgb, #8ec07c 90%, var(--text));
   background: color-mix(in srgb, #8ec07c 20%, var(--panel));
 }
 
-.claudeSkillsBadge.source-runtime {
+.agentSkillsBadge.source-runtime {
   color: color-mix(in srgb, #61afef 92%, var(--text));
   background: color-mix(in srgb, #61afef 18%, var(--panel));
 }
 
-.claudeSkillsName {
+.agentSkillsName {
   font-size: 13px;
   color: var(--text);
 }
 
-.claudeSkillsMeta {
+.agentSkillsMeta {
   font-size: 11px;
   color: var(--muted);
   word-break: break-word;
@@ -2596,10 +2996,10 @@
 
 .agentLivePanel {
   display: grid;
-  gap: 10px;
-  padding: 12px 14px;
+  gap: 8px;
+  padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--text) 10%, var(--border));
-  border-radius: 14px;
+  border-radius: 12px;
   background: color-mix(in srgb, var(--panel) 88%, var(--text) 2%);
   box-shadow: var(--shadow-1);
 }
@@ -2645,7 +3045,7 @@
 
 .agentLiveLabel {
   min-width: 0;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--text);
   white-space: nowrap;
@@ -2659,13 +3059,13 @@
 
 .agentLiveFeed {
   display: grid;
-  gap: 6px;
+  gap: 4px;
 }
 
 .agentLiveItem,
 .agentLiveTerminal {
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: 11px;
+  line-height: 1.4;
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
@@ -2683,7 +3083,7 @@
 
 .agentLiveTerminal {
   margin-top: 2px;
-  padding: 8px 10px;
+  padding: 6px 8px;
   border: 1px solid color-mix(in srgb, var(--border) 82%, var(--text) 6%);
   border-radius: 10px;
   background: color-mix(in srgb, var(--panel-2) 85%, var(--text) 3%);
@@ -2698,7 +3098,7 @@
 
 .agentLiveDebug {
   margin-top: 2px;
-  padding: 8px 10px;
+  padding: 6px 8px;
   border: 1px dashed color-mix(in srgb, var(--border) 75%, var(--text) 10%);
   border-radius: 10px;
   background: color-mix(in srgb, var(--panel) 82%, var(--text) 3%);
@@ -2713,24 +3113,24 @@
 
 .chatActivityDock {
   display: grid;
-  gap: 10px;
-  flex: 0 1 300px;
+  gap: 8px;
+  flex: 0 1 240px;
   min-height: 0;
-  max-height: min(30vh, 260px);
+  max-height: min(22vh, 190px);
   overflow: auto;
   padding-right: 2px;
 }
 
 .agentQuestionPanel {
   display: grid;
-  flex: 0 1 220px;
+  flex: 0 1 208px;
   min-height: 0;
-  gap: 10px;
-  padding: 12px;
+  gap: 8px;
+  padding: 10px;
   border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
   border-radius: 12px;
   background: color-mix(in srgb, var(--accent) 10%, var(--panel-2));
-  max-height: min(24vh, 200px);
+  max-height: min(22vh, 188px);
   overflow: auto;
 }
 
@@ -2749,13 +3149,18 @@
   display: grid;
   gap: 6px;
   text-align: left;
-  padding: 12px;
+  padding: 10px;
   border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
   background: color-mix(in srgb, var(--panel) 80%, var(--accent) 8%);
 }
 
 .agentQuestionOption:hover {
   background: color-mix(in srgb, var(--panel) 70%, var(--accent) 14%);
+}
+
+.agentQuestionOption.selected {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel));
 }
 
 .agentQuestionOption.recommended {
@@ -2766,13 +3171,36 @@
 .agentQuestionOptionHeader {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 12px;
+}
+
+.agentQuestionOptionControl {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  border: 1.5px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--panel) 85%, var(--accent) 4%);
+}
+
+.agentQuestionOptionControl.radio {
+  border-radius: 999px;
+}
+
+.agentQuestionOptionControl.checkbox {
+  border-radius: 4px;
+}
+
+.agentQuestionOption.selected .agentQuestionOptionControl {
+  border-color: color-mix(in srgb, var(--accent) 74%, var(--border));
+  background: color-mix(in srgb, var(--accent) 78%, var(--panel));
+  box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--panel) 88%, transparent);
 }
 
 .agentQuestionOptionLabel {
   font-weight: 700;
   color: var(--text);
+  flex: 1 1 auto;
 }
 
 .agentQuestionOptionBadge {
@@ -2796,11 +3224,16 @@
   gap: 8px;
 }
 
+.agentQuestionActions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .agentQuestionFreeform textarea {
   min-height: 84px;
 }
 
-.claudeRuntimePanel {
+.cliRuntimePanel {
   display: grid;
   gap: 10px;
   padding: 12px;
@@ -2809,28 +3242,28 @@
   background: color-mix(in srgb, var(--panel-2) 86%, var(--text) 4%);
 }
 
-.claudeRuntimeHeader {
+.cliRuntimeHeader {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
 }
 
-.claudeRuntimeHeaderActions {
+.cliRuntimeHeaderActions {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.claudeRuntimeMeta,
-.claudeRuntimeHint {
+.cliRuntimeMeta,
+.cliRuntimeHint {
   font-size: 12px;
   line-height: 1.5;
   color: var(--muted);
 }
 
-.claudeRuntimeSignal,
-.claudeRuntimeSection {
+.cliRuntimeSignal,
+.cliRuntimeSection {
   display: grid;
   gap: 6px;
   padding: 10px;
@@ -2839,39 +3272,39 @@
   background: color-mix(in srgb, var(--panel) 82%, var(--text) 4%);
 }
 
-.claudeRuntimeSignal.approval {
+.cliRuntimeSignal.approval {
   border-color: color-mix(in srgb, #d7ba7d 46%, var(--border));
 }
 
-.claudeRuntimeSignal.question {
+.cliRuntimeSignal.question {
   border-color: color-mix(in srgb, #61afef 44%, var(--border));
 }
 
-.claudeRuntimeSignal.plan {
+.cliRuntimeSignal.plan {
   border-color: color-mix(in srgb, #8ec07c 44%, var(--border));
 }
 
-.claudeRuntimeSignal.diff {
+.cliRuntimeSignal.diff {
   border-color: color-mix(in srgb, #c586c0 44%, var(--border));
 }
 
-.claudeRuntimeSignal.resume {
+.cliRuntimeSignal.resume {
   border-color: color-mix(in srgb, #e5c07b 44%, var(--border));
 }
 
-.claudeRuntimeList {
+.cliRuntimeList {
   display: grid;
   gap: 6px;
 }
 
-.claudeRuntimeListItem,
-.claudeRuntimeEvent {
+.cliRuntimeListItem,
+.cliRuntimeEvent {
   font-size: 12px;
   line-height: 1.5;
   color: var(--text);
 }
 
-.claudeRuntimeEvent {
+.cliRuntimeEvent {
   display: grid;
   gap: 2px;
   padding: 8px 10px;
@@ -2879,7 +3312,7 @@
   background: color-mix(in srgb, var(--panel) 78%, var(--text) 4%);
 }
 
-.claudeRuntimeEventKind {
+.cliRuntimeEventKind {
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
@@ -2887,15 +3320,15 @@
   color: var(--muted);
 }
 
-.claudeRuntimeEvent.kind-tool {
+.cliRuntimeEvent.kind-tool {
   border-left: 2px solid color-mix(in srgb, #56b6c2 60%, var(--border));
 }
 
-.claudeRuntimeEvent.kind-lifecycle {
+.cliRuntimeEvent.kind-lifecycle {
   border-left: 2px solid color-mix(in srgb, #e5c07b 60%, var(--border));
 }
 
-.claudeRuntimeMetaRow {
+.cliRuntimeMetaRow {
   display: grid;
   grid-template-columns: 88px minmax(0, 1fr);
   gap: 8px;
@@ -2903,16 +3336,16 @@
   font-size: 12px;
 }
 
-.claudeRuntimeMetaLabel {
+.cliRuntimeMetaLabel {
   color: var(--muted);
 }
 
-.claudeRuntimeMetaValue {
+.cliRuntimeMetaValue {
   word-break: break-word;
   color: color-mix(in srgb, var(--text) 94%, var(--muted));
 }
 
-.claudeRuntimeRaw {
+.cliRuntimeRaw {
   margin-top: 2px;
   padding: 8px 10px;
   border: 1px dashed color-mix(in srgb, var(--border) 74%, var(--text) 10%);
@@ -2927,7 +3360,7 @@
   color: color-mix(in srgb, var(--text) 92%, var(--muted));
 }
 
-.claudeCliHandoffPanel {
+.localCliHandoffPanel {
   display: grid;
   gap: 12px;
   padding: 14px;
@@ -2936,39 +3369,39 @@
   background: color-mix(in srgb, var(--panel-2) 86%, var(--text) 4%);
 }
 
-.claudeCliHandoffHeader {
+.localCliHandoffHeader {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
 }
 
-.claudeCliHandoffTitle {
+.localCliHandoffTitle {
   font-size: 15px;
   font-weight: 700;
 }
 
-.claudeCliHandoffMeta,
-.claudeCliHandoffHint,
-.claudeCliHandoffLabel {
+.localCliHandoffMeta,
+.localCliHandoffHint,
+.localCliHandoffLabel {
   font-size: 12px;
   line-height: 1.5;
   color: var(--muted);
 }
 
-.claudeCliHandoffActions {
+.localCliHandoffActions {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.claudeCliHandoffGrid {
+.localCliHandoffGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
-.claudeCliHandoffCard {
+.localCliHandoffCard {
   display: grid;
   gap: 4px;
   padding: 10px 12px;
@@ -2977,16 +3410,16 @@
   background: color-mix(in srgb, var(--panel) 82%, var(--text) 3%);
 }
 
-.claudeCliHandoffValue {
+.localCliHandoffValue {
   word-break: break-word;
 }
 
-.claudeCliSignalList {
+.localCliSignalList {
   display: grid;
   gap: 8px;
 }
 
-.claudeCliSignalItem {
+.localCliSignalItem {
   padding: 10px 12px;
   border-radius: 10px;
   border: 1px solid color-mix(in srgb, var(--border) 80%, var(--text) 8%);
@@ -3021,12 +3454,54 @@
 .meta {
   display: flex;
   align-items: center;
+  gap: 8px;
   width: 100%;
   font-size: 10px;
   opacity: 0.7;
 }
 
+.messageCapabilityBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, var(--text) 8%);
+  background: color-mix(in srgb, var(--panel) 88%, var(--text) 3%);
+  color: var(--text-soft);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  opacity: 0.96;
+}
+
+.messageCapabilityBadge.openclaw {
+  border-color: color-mix(in srgb, #e47a1f 44%, var(--border));
+  background: color-mix(in srgb, #e47a1f 14%, var(--panel));
+  color: color-mix(in srgb, #ffb06b 70%, var(--text));
+}
+
+.messageAudioButton {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--border) 84%, var(--text) 6%);
+  background: color-mix(in srgb, var(--panel) 90%, var(--text) 3%);
+  color: color-mix(in srgb, var(--text) 90%, var(--muted) 10%);
+  font-size: 10px;
+  line-height: 1.5;
+  opacity: 0.96;
+}
+
+.messageAudioButton:hover:not(:disabled) {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+}
+
 .bubble {
+  position: relative;
   max-width: min(78%, 820px);
   padding: 12px 14px;
   border-radius: 14px;
@@ -3035,6 +3510,10 @@
   font-size: 1em;
   line-height: 1.55;
   overflow-wrap: anywhere;
+}
+
+.assistant .bubble {
+  padding-top: 34px;
 }
 
 .bubblePlainText {
@@ -4867,6 +5346,10 @@
     gap: 8px;
   }
 
+  .chatCard.immersiveChatCard {
+    padding: 12px;
+  }
+
   .chatHeaderActions {
     width: 100%;
     grid-template-columns: minmax(0, 1fr) auto;
@@ -5026,23 +5509,33 @@
     transform: translateX(100%);
   }
 
-  .skillsDrawerPanel .claudeSkillsPanel {
+  .skillsDrawerPanel .agentSkillsPanel {
     border-radius: 0;
   }
 
-  .claudeMemoryPanel {
+  .agentMemoryPanel {
     border-radius: 0;
   }
 
-  .claudeInspectorPanel {
-    border-radius: 0;
-  }
-
-  .claudeInspectorSummaryGrid {
+  .openClawDrawerSummaryGrid,
+  .openClawDrawerSummaryGrid.compact {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .claudeInspectorViewerHeader {
+  .agentInspectorPanel {
+    border-radius: 0;
+  }
+
+  .agentInspectorSummaryGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .agentExecutionTraceLanes,
+  .agentExecutionTraceStep {
+    grid-template-columns: 72px 20px 82px minmax(0, 1fr);
+  }
+
+  .agentInspectorViewerHeader {
     display: grid;
   }
 
@@ -5073,22 +5566,6 @@
     width: 40px;
     min-width: 40px;
     height: 40px;
-  }
-
-  .immersiveWorkspacePanel {
-    inset: 0;
-    width: 100%;
-    border-radius: 0;
-    transform: translateX(100%);
-  }
-
-  .immersiveWorkspaceShell {
-    border-radius: 0;
-  }
-
-  .immersiveWorkspaceHeader {
-    align-items: flex-start;
-    flex-direction: column;
   }
 
   .terminalPanel {
@@ -5137,7 +5614,7 @@
   }
 
   .composer {
-    flex-direction: column;
+    grid-template-columns: minmax(0, 1fr);
     align-items: stretch;
   }
 

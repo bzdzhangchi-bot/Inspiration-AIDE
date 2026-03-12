@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, Menu } = require('electron');
 const https = require('https');
 const path = require('path');
 const fs = require('fs');
@@ -33,6 +33,24 @@ const UPDATE_REQUEST_TIMEOUT_MS = 20000;
 const STARTER_PROJECT_TEMPLATE_DIR = path.join(__dirname, 'starter-project');
 const STARTER_PROJECT_TARGET_DIRNAME = 'starter-project';
 const STARTER_PROJECT_MANIFEST_NAME = '.inspiration-starter.json';
+const OPENCLAW_INSTALL_COMMAND = 'npm install -g openclaw@latest';
+const OPENCLAW_DEFAULT_ONBOARD_ARGS = [
+  'onboard',
+  '--non-interactive',
+  '--flow',
+  'quickstart',
+  '--mode',
+  'local',
+  '--auth-choice',
+  'skip',
+  '--skip-search',
+  '--skip-skills',
+  '--install-daemon',
+  '--daemon-runtime',
+  'node',
+  '--accept-risk',
+  '--json'
+];
 
 const state = {
   workspaceRoot: null,
@@ -50,6 +68,22 @@ const state = {
   },
   updater: {
     activeDownload: null
+  },
+  openClawInstaller: {
+    currentRunId: 0,
+    activePromise: null,
+    state: {
+      status: 'idle',
+      mode: 'install',
+      step: 'idle',
+      message: 'OpenClaw installer idle.',
+      detail: null,
+      log: '',
+      percent: null,
+      startedAt: null,
+      finishedAt: null,
+      openClawVersion: null
+    }
   }
 };
 
@@ -76,6 +110,38 @@ function emitWorkspaceEvent(payload) {
 
 function emitAppUpdateEvent(payload) {
   broadcast('app-update:event', payload);
+}
+
+function buildOpenClawInstallerStatePayload() {
+  return {
+    ...state.openClawInstaller.state
+  };
+}
+
+function emitOpenClawInstallerEvent() {
+  broadcast('openclaw-installer:event', buildOpenClawInstallerStatePayload());
+}
+
+function updateOpenClawInstallerState(patch) {
+  state.openClawInstaller.state = {
+    ...state.openClawInstaller.state,
+    ...patch
+  };
+  emitOpenClawInstallerEvent();
+}
+
+function appendOpenClawInstallerLog(value) {
+  const text = String(value || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  if (!text) return state.openClawInstaller.state.log;
+  const next = `${state.openClawInstaller.state.log || ''}${text}`;
+  const maxChars = 120000;
+  return next.length <= maxChars ? next : next.slice(next.length - maxChars);
+}
+
+function summarizeProcessChunk(value) {
+  const text = String(value || '').replace(/\r/g, '\n');
+  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+  return lines.at(-1) ?? null;
 }
 
 function normalizeWorkspaceRoots(nextRoots) {
@@ -270,6 +336,76 @@ function broadcast(channel, payload) {
   }
 }
 
+function emitAppCommand(type, browserWindow = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]) {
+  if (!browserWindow || browserWindow.isDestroyed()) return;
+  browserWindow.webContents.send('app:command', { type });
+}
+
+function buildApplicationMenu() {
+  const template = [];
+
+  if (process.platform === 'darwin') {
+    template.push({ role: 'appMenu' });
+  }
+
+  template.push({
+    label: 'File',
+    submenu: [
+      {
+        label: 'Open Project…',
+        click: (_menuItem, browserWindow) => emitAppCommand('open-project', browserWindow)
+      },
+      { type: 'separator' },
+      process.platform === 'darwin' ? { role: 'close' } : { role: 'quit' }
+    ]
+  });
+
+  template.push({
+    label: 'Edit',
+    submenu: [
+      { role: 'undo' },
+      { role: 'redo' },
+      { type: 'separator' },
+      { role: 'cut' },
+      { role: 'copy' },
+      { role: 'paste' },
+      { role: 'selectAll' }
+    ]
+  });
+
+  template.push({
+    label: 'View',
+    submenu: [
+      { role: 'reload' },
+      { role: 'forceReload' },
+      { role: 'toggleDevTools' },
+      { type: 'separator' },
+      { role: 'resetZoom' },
+      { role: 'zoomIn' },
+      { role: 'zoomOut' },
+      { type: 'separator' },
+      { role: 'togglefullscreen' }
+    ]
+  });
+
+  template.push({
+    label: 'Window',
+    submenu: process.platform === 'darwin'
+      ? [
+          { role: 'minimize' },
+          { role: 'zoom' },
+          { type: 'separator' },
+          { role: 'front' }
+        ]
+      : [
+          { role: 'minimize' },
+          { role: 'close' }
+        ]
+  });
+
+  return Menu.buildFromTemplate(template);
+}
+
 function getDefaultTerminalCwd() {
   return state.workspaceRoot || app.getPath('home');
 }
@@ -378,9 +514,31 @@ function reorderWorkspaceRoots(nextRoots, options = {}) {
   };
 }
 
-function startCore() {
+async function isCoreHealthy(port = 17840) {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1200);
+    const response = await fetch(`http://127.0.0.1:${port}/health`, {
+      signal: controller.signal,
+      headers: { Accept: 'application/json' }
+    });
+    clearTimeout(timeout);
+    if (!response.ok) return false;
+    const payload = await response.json().catch(() => null);
+    return payload?.ok === true;
+  } catch {
+    return false;
+  }
+}
+
+async function startCore() {
   if (process.env.ASSISTANT_DESK_NO_CORE === '1') {
     console.log('[core] skipped (ASSISTANT_DESK_NO_CORE=1)');
+    return;
+  }
+
+  if (await isCoreHealthy()) {
+    console.log('[core] reusing existing core on 17840');
     return;
   }
 
@@ -892,6 +1050,256 @@ async function runProgramCommand(command, args, cwd, timeoutMs = 15000, maxOutpu
   });
 }
 
+async function runShellCommandWithStreaming(command, options = {}) {
+  const shell = process.env.SHELL || '/bin/zsh';
+  const cwd = options.cwd || getDefaultTerminalCwd();
+  const timeoutMs = Math.max(1000, options.timeoutMs || 20000);
+
+  return await new Promise((resolve, reject) => {
+    const proc = spawn(shell, ['-lc', command], {
+      cwd,
+      env: {
+        ...process.env,
+        ...(options.env || {})
+      }
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        proc.kill('SIGTERM');
+      } catch {
+        // ignore
+      }
+      resolve({ stdout, stderr: `${stderr}\nCommand timed out.`.trim(), exitCode: null, signal: 'SIGTERM', cwd });
+    }, timeoutMs);
+
+    proc.stdout.on('data', (chunk) => {
+      const text = String(chunk);
+      stdout += text;
+      options.onStdout?.(text);
+    });
+
+    proc.stderr.on('data', (chunk) => {
+      const text = String(chunk);
+      stderr += text;
+      options.onStderr?.(text);
+    });
+
+    proc.on('error', (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+
+    proc.on('close', (exitCode, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        stdout,
+        stderr,
+        exitCode: typeof exitCode === 'number' ? exitCode : null,
+        signal: signal ? String(signal) : null,
+        cwd
+      });
+    });
+  });
+}
+
+async function resolveOpenClawCommandPath(cwd) {
+  const resolved = await runWorkspaceCommand('command -v openclaw || true', 10000);
+  const commandPath = resolved.stdout.trim();
+  if (commandPath) return commandPath;
+
+  const prefixResult = await runWorkspaceCommand('npm prefix -g', 10000);
+  const prefix = prefixResult.stdout.trim();
+  if (prefix) {
+    const candidate = path.join(prefix, 'bin', 'openclaw');
+    try {
+      await fsp.access(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      // ignore
+    }
+  }
+
+  return 'openclaw';
+}
+
+async function startOpenClawInstaller(options = {}) {
+  if (state.openClawInstaller.activePromise) {
+    return buildOpenClawInstallerStatePayload();
+  }
+
+  const mode = options.update ? 'update' : 'install';
+  const runId = state.openClawInstaller.currentRunId + 1;
+  state.openClawInstaller.currentRunId = runId;
+
+  const task = (async () => {
+    try {
+      updateOpenClawInstallerState({
+        status: 'running',
+        mode,
+        step: 'preflight',
+        message: mode === 'update' ? 'Preparing OpenClaw CLI update…' : 'Preparing OpenClaw one-click install…',
+        detail: 'Checking runtime and install prerequisites.',
+        log: '',
+        percent: 6,
+        startedAt: Date.now(),
+        finishedAt: null,
+        openClawVersion: state.openClawInstaller.state.openClawVersion
+      });
+
+      const installResult = await runShellCommandWithStreaming(OPENCLAW_INSTALL_COMMAND, {
+        cwd: getDefaultTerminalCwd(),
+        timeoutMs: 15 * 60 * 1000,
+        onStdout: (chunk) => {
+          const detail = summarizeProcessChunk(chunk);
+          const log = appendOpenClawInstallerLog(chunk);
+          if (!detail) {
+            updateOpenClawInstallerState({ log });
+            return;
+          }
+          updateOpenClawInstallerState({
+            step: 'installing-cli',
+            message: mode === 'update' ? 'Updating OpenClaw CLI…' : 'Installing OpenClaw CLI…',
+            detail,
+            log,
+            percent: 28
+          });
+        },
+        onStderr: (chunk) => {
+          const detail = summarizeProcessChunk(chunk);
+          const log = appendOpenClawInstallerLog(chunk);
+          if (!detail) {
+            updateOpenClawInstallerState({ log });
+            return;
+          }
+          updateOpenClawInstallerState({
+            step: 'installing-cli',
+            message: mode === 'update' ? 'Updating OpenClaw CLI…' : 'Installing OpenClaw CLI…',
+            detail,
+            log,
+            percent: 28
+          });
+        }
+      });
+
+      if (installResult.exitCode !== 0) {
+        throw new Error(installResult.stderr.trim() || installResult.stdout.trim() || 'OpenClaw CLI installation failed.');
+      }
+
+      const openClawCommand = await resolveOpenClawCommandPath(getDefaultTerminalCwd());
+      const versionResult = await runProgramCommand(openClawCommand, ['--version'], getDefaultTerminalCwd(), 15000);
+      const openClawVersion = versionResult.exitCode === 0
+        ? (versionResult.stdout.trim().split(/\s+/).find((part) => /^v?\d+\./.test(part)) ?? (versionResult.stdout.trim() || null))
+        : null;
+
+      if (!options.update) {
+        const onboardCommand = `${JSON.stringify(openClawCommand)} ${OPENCLAW_DEFAULT_ONBOARD_ARGS.map((arg) => JSON.stringify(arg)).join(' ')}`;
+        const onboardResult = await runShellCommandWithStreaming(onboardCommand, {
+          cwd: getDefaultTerminalCwd(),
+          timeoutMs: 20 * 60 * 1000,
+          onStdout: (chunk) => {
+            const detail = summarizeProcessChunk(chunk);
+            const log = appendOpenClawInstallerLog(chunk);
+            if (!detail) {
+              updateOpenClawInstallerState({ log, openClawVersion });
+              return;
+            }
+            updateOpenClawInstallerState({
+              step: 'onboarding',
+              message: 'Applying default OpenClaw setup…',
+              detail,
+              log,
+              percent: 72,
+              openClawVersion
+            });
+          },
+          onStderr: (chunk) => {
+            const detail = summarizeProcessChunk(chunk);
+            const log = appendOpenClawInstallerLog(chunk);
+            if (!detail) {
+              updateOpenClawInstallerState({ log, openClawVersion });
+              return;
+            }
+            updateOpenClawInstallerState({
+              step: 'onboarding',
+              message: 'Applying default OpenClaw setup…',
+              detail,
+              log,
+              percent: 72,
+              openClawVersion
+            });
+          }
+        });
+
+        if (onboardResult.exitCode !== 0) {
+          throw new Error(onboardResult.stderr.trim() || onboardResult.stdout.trim() || 'OpenClaw onboarding failed.');
+        }
+      }
+
+      updateOpenClawInstallerState({
+        step: 'verifying',
+        message: 'Verifying OpenClaw installation…',
+        detail: 'Checking CLI health and final version.',
+        percent: 92,
+        openClawVersion
+      });
+
+      const verifyResult = await runProgramCommand(openClawCommand, ['--version'], getDefaultTerminalCwd(), 15000);
+      if (verifyResult.exitCode !== 0) {
+        throw new Error(verifyResult.stderr.trim() || 'OpenClaw verification failed.');
+      }
+
+      const verifiedVersion = verifyResult.stdout.trim().split(/\s+/).find((part) => /^v?\d+\./.test(part)) ?? (verifyResult.stdout.trim() || openClawVersion);
+      const completionDetail = mode === 'update'
+        ? 'Background update finished successfully.'
+        : 'Background install finished with default QuickStart setup and daemon install.';
+
+      updateOpenClawInstallerState({
+        status: 'success',
+        mode,
+        step: 'completed',
+        message: mode === 'update' ? 'OpenClaw CLI updated.' : 'OpenClaw installed and configured.',
+        detail: completionDetail,
+        log: appendOpenClawInstallerLog(`\n${completionDetail}\n`),
+        percent: 100,
+        finishedAt: Date.now(),
+        openClawVersion: verifiedVersion
+      });
+
+      return buildOpenClawInstallerStatePayload();
+    } catch (error) {
+      const errorDetail = error instanceof Error ? error.message : 'OpenClaw installer failed unexpectedly.';
+      updateOpenClawInstallerState({
+        status: 'error',
+        step: 'failed',
+        message: mode === 'update' ? 'OpenClaw update failed.' : 'OpenClaw installation failed.',
+        detail: errorDetail,
+        log: appendOpenClawInstallerLog(`\n${errorDetail}\n`),
+        percent: null,
+        finishedAt: Date.now()
+      });
+      return buildOpenClawInstallerStatePayload();
+    } finally {
+      if (state.openClawInstaller.currentRunId === runId) {
+        state.openClawInstaller.activePromise = null;
+      }
+    }
+  })();
+
+  state.openClawInstaller.activePromise = task;
+  return buildOpenClawInstallerStatePayload();
+}
+
 function parseGitBranchHeader(headerLine) {
   const result = {
     branch: null,
@@ -1327,6 +1735,27 @@ function resolveWithinWorkspace(targetPath) {
   return resolved;
 }
 
+function escapeAppleScriptString(value) {
+  return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+async function copyWorkspaceEntryToClipboard(targetPath) {
+  const resolved = resolveWithinWorkspace(targetPath);
+  clipboard.writeText(resolved);
+
+  if (process.platform !== 'darwin') {
+    return;
+  }
+
+  const appleScriptPath = escapeAppleScriptString(resolved);
+  const script = `set the clipboard to (POSIX file "${appleScriptPath}")`;
+  const result = await runProgramCommand('/usr/bin/osascript', ['-e', script], path.dirname(resolved), 10000, 4000);
+  if (result.exitCode !== 0) {
+    const detail = normalizeCapturedOutput(result.stderr) || normalizeCapturedOutput(result.stdout);
+    throw new Error(detail || 'Unable to copy the selected file to the macOS clipboard.');
+  }
+}
+
 async function writeFileAtomic(filePath, contents) {
   const dir = path.dirname(filePath);
   await fsp.mkdir(dir, { recursive: true });
@@ -1361,7 +1790,7 @@ async function pathExists(targetPath) {
   }
 }
 
-function toClaudeProjectKey(rootPath) {
+function toAgentProjectKey(rootPath) {
   const resolved = path.resolve(rootPath);
   return resolved.replace(/[\\/]+/g, '-');
 }
@@ -1661,7 +2090,7 @@ async function readTextPreview(filePath, maxLines = 24) {
   };
 }
 
-async function buildClaudeMemoryFileItem(filePath, scope, kind, rootPath = null) {
+async function buildAgentMemoryFileItem(filePath, scope, kind, rootPath = null) {
   const stat = await fsp.stat(filePath);
   const { preview, lineCount } = await readTextPreview(filePath);
   return {
@@ -1693,7 +2122,7 @@ async function collectMarkdownFilesRecursively(baseDir, scope, kind, maxDepth = 
         continue;
       }
       if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.md')) continue;
-      items.push(await buildClaudeMemoryFileItem(nextPath, scope, kind, baseDir));
+      items.push(await buildAgentMemoryFileItem(nextPath, scope, kind, baseDir));
     }
   }
 
@@ -1702,39 +2131,39 @@ async function collectMarkdownFilesRecursively(baseDir, scope, kind, maxDepth = 
   return items;
 }
 
-async function inspectClaudeMemory(workspaceRoot) {
+async function inspectAgentMemory(workspaceRoot) {
   const resolvedWorkspaceRoot = resolveWithinWorkspace(workspaceRoot || state.workspaceRoot);
   const instructionFiles = [];
   const autoMemoryFiles = [];
   const notices = [];
   const homeDir = os.homedir();
-  const userClaudeDir = path.join(homeDir, '.claude');
-  const projectKey = toClaudeProjectKey(resolvedWorkspaceRoot);
-  const autoMemoryRoot = path.join(userClaudeDir, 'projects', projectKey, 'memory');
+  const userAgentDir = path.join(homeDir, '.inspiration');
+  const projectKey = toAgentProjectKey(resolvedWorkspaceRoot);
+  const autoMemoryRoot = path.join(userAgentDir, 'projects', projectKey, 'memory');
   const workspaceCandidates = [
-    { filePath: path.join(resolvedWorkspaceRoot, 'CLAUDE.md'), scope: 'project', kind: 'claude' },
-    { filePath: path.join(resolvedWorkspaceRoot, 'CLAUDE.local.md'), scope: 'project', kind: 'local' },
-    { filePath: path.join(resolvedWorkspaceRoot, '.claude', 'CLAUDE.md'), scope: 'project', kind: 'claude' }
+    { filePath: path.join(resolvedWorkspaceRoot, 'AGENT.md'), scope: 'project', kind: 'agent' },
+    { filePath: path.join(resolvedWorkspaceRoot, 'AGENT.local.md'), scope: 'project', kind: 'local' },
+    { filePath: path.join(resolvedWorkspaceRoot, '.inspiration', 'AGENT.md'), scope: 'project', kind: 'agent' }
   ];
 
   for (const candidate of workspaceCandidates) {
     if (!(await pathExists(candidate.filePath))) continue;
-    instructionFiles.push(await buildClaudeMemoryFileItem(candidate.filePath, candidate.scope, candidate.kind, resolvedWorkspaceRoot));
+    instructionFiles.push(await buildAgentMemoryFileItem(candidate.filePath, candidate.scope, candidate.kind, resolvedWorkspaceRoot));
   }
 
-  const projectRulesDir = path.join(resolvedWorkspaceRoot, '.claude', 'rules');
+  const projectRulesDir = path.join(resolvedWorkspaceRoot, '.inspiration', 'rules');
   instructionFiles.push(...await collectMarkdownFilesRecursively(projectRulesDir, 'project', 'rule'));
 
-  const userClaudeFile = path.join(userClaudeDir, 'CLAUDE.md');
-  if (await pathExists(userClaudeFile)) {
-    instructionFiles.push(await buildClaudeMemoryFileItem(userClaudeFile, 'user', 'claude', userClaudeDir));
+  const userAgentFile = path.join(userAgentDir, 'AGENT.md');
+  if (await pathExists(userAgentFile)) {
+    instructionFiles.push(await buildAgentMemoryFileItem(userAgentFile, 'user', 'agent', userAgentDir));
   }
 
-  const userRulesDir = path.join(userClaudeDir, 'rules');
+  const userRulesDir = path.join(userAgentDir, 'rules');
   instructionFiles.push(...await collectMarkdownFilesRecursively(userRulesDir, 'user', 'rule'));
 
   let autoMemoryEnabled = true;
-  const localSettingsPath = path.join(resolvedWorkspaceRoot, '.claude', 'settings.local.json');
+  const localSettingsPath = path.join(resolvedWorkspaceRoot, '.inspiration', 'settings.local.json');
   if (await pathExists(localSettingsPath)) {
     try {
       const raw = await fsp.readFile(localSettingsPath, 'utf8');
@@ -1743,7 +2172,7 @@ async function inspectClaudeMemory(workspaceRoot) {
         autoMemoryEnabled = parsed.autoMemoryEnabled;
       }
     } catch {
-      notices.push('Unable to parse .claude/settings.local.json');
+      notices.push('Unable to parse .inspiration/settings.local.json');
     }
   }
 
@@ -1764,20 +2193,20 @@ async function inspectClaudeMemory(workspaceRoot) {
   };
 }
 
-function resolveClaudeAccessiblePath(targetPath, workspaceRoot) {
+function resolveAgentAccessiblePath(targetPath, workspaceRoot) {
   if (typeof targetPath !== 'string' || !targetPath.trim()) {
-    throw new Error('Invalid Claude memory path');
+    throw new Error('Invalid agent memory path');
   }
 
   const resolved = path.resolve(targetPath);
-  const homeClaudeRoot = path.join(os.homedir(), '.claude');
-  const allowedRoots = [homeClaudeRoot];
+  const homeAgentRoot = path.join(os.homedir(), '.inspiration');
+  const allowedRoots = [homeAgentRoot];
 
   try {
     const resolvedWorkspaceRoot = resolveWithinWorkspace(workspaceRoot || state.workspaceRoot);
     allowedRoots.push(resolvedWorkspaceRoot);
   } catch {
-    // Ignore if no workspace is active; ~/.claude is still allowed.
+    // Ignore if no workspace is active; ~/.inspiration is still allowed.
   }
 
   const allowedRoot = allowedRoots
@@ -1785,7 +2214,7 @@ function resolveClaudeAccessiblePath(targetPath, workspaceRoot) {
     .find((root) => resolved === root || resolved.startsWith(root + path.sep));
 
   if (!allowedRoot) {
-    throw new Error('Path denied (outside Claude-accessible locations)');
+    throw new Error('Path denied (outside agent-accessible locations)');
   }
 
   return resolved;
@@ -1795,7 +2224,8 @@ function registerIpc() {
   ipcMain.handle('app:getInfo', async () => getAppInfo());
   ipcMain.handle('app:checkForUpdates', async () => await fetchLatestReleaseSummary());
   ipcMain.handle('app:downloadLatestUpdate', async () => await downloadLatestReleaseAsset());
-
+  ipcMain.handle('openclaw-installer:getState', async () => buildOpenClawInstallerStatePayload());
+  ipcMain.handle('openclaw-installer:start', async (_ev, options) => await startOpenClawInstaller(options || {}));
   ipcMain.handle('workspace:getRoot', async () => state.workspaceRoot);
   ipcMain.handle('workspace:getRoots', async () => [...state.workspaceRoots]);
 
@@ -1998,6 +2428,10 @@ function registerIpc() {
     emitWorkspaceEvent({ type: 'changed', eventType: 'copy', path: resolvedDestination });
   });
 
+  ipcMain.handle('fs:copyWorkspaceEntryToClipboard', async (_ev, { targetPath }) => {
+    await copyWorkspaceEntryToClipboard(targetPath);
+  });
+
   ipcMain.handle('fs:deleteWorkspaceEntry', async (_ev, { targetPath }) => {
     const resolved = resolveWithinWorkspace(targetPath);
     if (!(await pathExists(resolved))) {
@@ -2028,19 +2462,19 @@ function registerIpc() {
     return { path: pickedPath, contents };
   });
 
-  ipcMain.handle('claude:getMemorySnapshot', async (_ev, { workspaceRoot }) => {
-    return await inspectClaudeMemory(workspaceRoot);
+  ipcMain.handle('agent:getMemorySnapshot', async (_ev, { workspaceRoot }) => {
+    return await inspectAgentMemory(workspaceRoot);
   });
 
-  ipcMain.handle('claude:readMemoryFile', async (_ev, { filePath, workspaceRoot }) => {
-    const resolved = resolveClaudeAccessiblePath(filePath, workspaceRoot);
+  ipcMain.handle('agent:readMemoryFile', async (_ev, { filePath, workspaceRoot }) => {
+    const resolved = resolveAgentAccessiblePath(filePath, workspaceRoot);
     const stat = await fsp.stat(resolved);
     if (!stat.isFile()) throw new Error('Not a file');
     return await fsp.readFile(resolved, 'utf8');
   });
 
-  ipcMain.handle('claude:revealPath', async (_ev, { filePath, workspaceRoot }) => {
-    const resolved = resolveClaudeAccessiblePath(filePath, workspaceRoot);
+  ipcMain.handle('agent:revealPath', async (_ev, { filePath, workspaceRoot }) => {
+    const resolved = resolveAgentAccessiblePath(filePath, workspaceRoot);
     shell.showItemInFolder(resolved);
     return true;
   });
@@ -2058,6 +2492,9 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.cjs')
     }
   });
+  const devUrl = process.env.VITE_DEV_SERVER_URL;
+  const distIndexPath = path.join(__dirname, '..', 'dist', 'index.html');
+  let fellBackToDist = false;
 
   win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
     if (level <= 1) {
@@ -2069,6 +2506,12 @@ function createWindow() {
 
   win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     console.error('[window] did-fail-load', { errorCode, errorDescription, validatedURL });
+
+    if (!fellBackToDist && devUrl && validatedURL === `${devUrl}/`) {
+      fellBackToDist = true;
+      console.warn('[window] dev server unavailable, falling back to dist/index.html');
+      void win.loadFile(distIndexPath);
+    }
   });
 
   win.webContents.on('render-process-gone', (_event, details) => {
@@ -2079,12 +2522,11 @@ function createWindow() {
     console.error('[window] unresponsive');
   });
 
-  const devUrl = process.env.VITE_DEV_SERVER_URL;
   if (devUrl) {
     win.loadURL(devUrl);
     win.webContents.openDevTools({ mode: 'detach' });
   } else {
-    win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+    win.loadFile(distIndexPath);
   }
 }
 
@@ -2093,8 +2535,9 @@ app.whenReady().then(async () => {
   await syncStarterWorkspaceState();
   watchWorkspaceRoots(state.workspaceRoots);
   registerIpc();
+  Menu.setApplicationMenu(buildApplicationMenu());
 
-  startCore();
+  await startCore();
   ensureTerminalSession();
   createWindow();
 

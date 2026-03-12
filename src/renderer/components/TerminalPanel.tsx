@@ -12,6 +12,7 @@ const initialState: TerminalState = {
 
 export type TerminalPanelHandle = {
   runCommand: (command: string, timeoutMs?: number) => Promise<TerminalCommandResult | null>;
+  sendCommand: (command: string) => Promise<number | null>;
   interruptAgentCommand: () => Promise<void>;
   focusActiveSession: () => void;
 };
@@ -305,6 +306,20 @@ export const TerminalPanel = forwardRef<TerminalPanelHandle, {
           activeAgentSessionIdRef.current = null;
         }
       }
+    },
+    async sendCommand(command: string) {
+      const activeSession = getActiveSession();
+      let sessionId = activeSession?.id ?? null;
+      if (sessionId === null) {
+        const created = await terminalClient.createSession(undefined, undefined);
+        if (created === null) return null;
+        sessionId = created;
+        bufferRef.current.set(created, '');
+      }
+      await terminalClient.setActiveSession(sessionId);
+      appendLocalNotice(sessionId, `[Inspiration] Streaming command in terminal: ${command}`);
+      await terminalClient.sendCommand(command, sessionId, 'chat');
+      return sessionId;
     },
     async interruptAgentCommand() {
       const sessionId = activeAgentSessionIdRef.current ?? activeSessionIdRef.current;

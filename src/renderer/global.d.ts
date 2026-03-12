@@ -16,27 +16,27 @@ type WorkspaceEvent =
   | { type: 'changed'; eventType: string; path: string }
   | { type: 'error'; message: string };
 
-type ClaudeMemoryFile = {
+type AgentMemoryFile = {
   id: string;
   path: string;
   displayPath: string;
   relativePath: string;
   name: string;
   scope: 'user' | 'project' | 'auto';
-  kind: 'claude' | 'local' | 'rule' | 'memory';
+  kind: 'agent' | 'local' | 'rule' | 'memory';
   lineCount: number;
   preview: string;
   updatedAt: number;
   size: number;
 };
 
-type ClaudeMemorySnapshot = {
+type AgentMemorySnapshot = {
   workspaceRoot: string;
   projectKey: string;
   autoMemoryEnabled: boolean;
   autoMemoryRoot: string;
-  instructionFiles: ClaudeMemoryFile[];
-  autoMemoryFiles: ClaudeMemoryFile[];
+  instructionFiles: AgentMemoryFile[];
+  autoMemoryFiles: AgentMemoryFile[];
   notices: string[];
 };
 
@@ -125,11 +125,30 @@ declare global {
     | { type: 'download-progress'; fileName: string; receivedBytes: number; totalBytes: number | null; percent: number | null }
     | { type: 'download-complete'; fileName: string; filePath: string; totalBytes: number; openError: string | null };
 
+  type AppCommandEvent = {
+    type: 'open-project';
+  };
+
+    type OpenClawInstallerState = {
+      status: 'idle' | 'running' | 'success' | 'error';
+      mode: 'install' | 'update';
+      step: 'idle' | 'preflight' | 'installing-cli' | 'onboarding' | 'verifying' | 'completed' | 'failed';
+      message: string;
+      detail: string | null;
+      log: string;
+      percent: number | null;
+      startedAt: number | null;
+      finishedAt: number | null;
+      openClawVersion: string | null;
+    };
+
   interface Window {
     assistantDesk: {
       getAppInfo(): Promise<AppInfo>;
       checkForUpdates(): Promise<AppUpdateSummary>;
       downloadLatestUpdate(): Promise<AppUpdateSummary>;
+      getOpenClawInstallerState(): Promise<OpenClawInstallerState>;
+      startOpenClawInstaller(options?: { update?: boolean }): Promise<OpenClawInstallerState>;
       selectWorkspaceFolder(): Promise<string | null>;
       getWorkspaceRoot(): Promise<string | null>;
       getWorkspaceRoots(): Promise<string[]>;
@@ -151,11 +170,12 @@ declare global {
       createWorkspaceFile(filePath: string, contents?: string): Promise<void>;
       createWorkspaceDir(dirPath: string): Promise<void>;
       copyWorkspaceEntry(sourcePath: string, destinationPath: string): Promise<void>;
+      copyWorkspaceEntryToClipboard(targetPath: string): Promise<void>;
       deleteWorkspaceEntry(targetPath: string): Promise<void>;
       openArbitraryTextFile(): Promise<{ path: string; contents: string } | null>;
-      getClaudeMemorySnapshot(workspaceRoot?: string | null): Promise<ClaudeMemorySnapshot>;
-      readClaudeMemoryFile(filePath: string, workspaceRoot?: string | null): Promise<string>;
-      revealClaudePath(filePath: string, workspaceRoot?: string | null): Promise<boolean>;
+      getAgentMemorySnapshot(workspaceRoot?: string | null): Promise<AgentMemorySnapshot>;
+      readAgentMemoryFile(filePath: string, workspaceRoot?: string | null): Promise<string>;
+      revealAgentPath(filePath: string, workspaceRoot?: string | null): Promise<boolean>;
       getTerminalState(): Promise<TerminalState>;
       createTerminalSession(cwd?: string, title?: string): Promise<number>;
       setActiveTerminalSession(sessionId: number): Promise<void>;
@@ -169,6 +189,8 @@ declare global {
       onTerminalEvent(listener: (event: TerminalEvent) => void): () => void;
       onWorkspaceEvent(listener: (event: WorkspaceEvent) => void): () => void;
       onAppUpdateEvent(listener: (event: AppUpdateEvent) => void): () => void;
+      onAppCommand(listener: (event: AppCommandEvent) => void): () => void;
+      onOpenClawInstallerEvent(listener: (state: OpenClawInstallerState) => void): () => void;
     };
   }
 }

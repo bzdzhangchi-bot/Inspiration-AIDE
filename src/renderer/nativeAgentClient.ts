@@ -1,20 +1,20 @@
 import { fsClient } from './fsClient';
 import { terminalClient, type TerminalEvent, type TerminalState } from './terminalClient';
 
-export type ClaudeCodeRuntimeEvent = {
+export type NativeAgentRuntimeEvent = {
   kind: 'status' | 'plan' | 'question' | 'approval' | 'diff' | 'message' | 'tool' | 'lifecycle';
   text: string;
   createdAt: number;
 };
 
-type ClaudeRuntimeResumeInfo = {
+type NativeAgentRuntimeResumeInfo = {
   restoredFromStorage: boolean;
   restoredAt: number | null;
   snapshotSavedAt: number | null;
   snapshotSessionId: number | null;
 };
 
-export type ClaudeCodeRuntimeState = {
+export type NativeAgentRuntimeState = {
   sessionId: number | null;
   workspaceRoot: string | null;
   connected: boolean;
@@ -26,8 +26,8 @@ export type ClaudeCodeRuntimeState = {
   pendingApproval: string | null;
   lastPlan: string[];
   diffDetected: boolean;
-  events: ClaudeCodeRuntimeEvent[];
-  resumeInfo: ClaudeRuntimeResumeInfo;
+  events: NativeAgentRuntimeEvent[];
+  resumeInfo: NativeAgentRuntimeResumeInfo;
   capabilities: {
     interactiveStructuredOutput: boolean;
     printStructuredOutput: boolean;
@@ -35,7 +35,7 @@ export type ClaudeCodeRuntimeState = {
   };
 };
 
-const CLAUDE_SESSION_TITLE = 'Claude Code';
+const NATIVE_AGENT_SESSION_TITLE = 'Native Agent';
 const MAX_EVENTS = 24;
 const MAX_RAW_TAIL = 6000;
 const MAX_DEBUG_TAIL = 6000;
@@ -47,8 +47,8 @@ const PLAN_START_PATTERN = /\b(plan|implementation plan|proposed plan|approach o
 const APPROVAL_PATTERN = /\b(approve|approval|permission|allow|proceed|continue\?)\b/i;
 const QUESTION_PATTERN = /\?|\b(which|choose|select|pick|enter|provide|what should)\b/i;
 const DIFF_PATTERN = /^(diff --git|@@ |\+\+\+ |--- )/;
-const STORAGE_PREFIX = 'claudeCodeRuntime:';
-const DEBUG_LOG_RELATIVE_PATH = '.claude/inspiration-debug.log';
+const STORAGE_PREFIX = 'nativeAgentRuntime:';
+const DEBUG_LOG_RELATIVE_PATH = '.inspiration/native-agent-debug.log';
 const DEBUG_PREFIX_PATTERN = /^\d{4}-\d{2}-\d{2}T[^\s]+\s+\[(?:DEBUG|WARN|ERROR)\]\s*/;
 const DEBUG_APPROVAL_PATTERN = /\b(approve|approval|permission|allow rule|denied|disallowed|consent)\b/i;
 const DEBUG_TOOL_PATTERN = /\b(tool|websearch|mcp|hook|plugin|ripgrep|\brg\b|\blsp\b|bash\()\b/i;
@@ -64,7 +64,7 @@ const TERMINAL_NOISE_PATTERNS = [
   /^\[process exited/i
 ];
 
-type StoredClaudeRuntime = {
+type StoredNativeAgentRuntime = {
   workspaceRoot: string;
   debugLogPath: string | null;
   pendingQuestion: string | null;
@@ -73,7 +73,7 @@ type StoredClaudeRuntime = {
   diffDetected: boolean;
   rawTail: string;
   debugLogTail: string;
-  events: ClaudeCodeRuntimeEvent[];
+  events: NativeAgentRuntimeEvent[];
   lastSessionId: number | null;
   savedAt: number;
 };
@@ -100,15 +100,15 @@ function appendLimitedTail(current: string, addition: string, maxLength: number)
   return next.length <= maxLength ? next : next.slice(next.length - maxLength);
 }
 
-function pushEvent(state: ClaudeCodeRuntimeState, kind: ClaudeCodeRuntimeEvent['kind'], text: string) {
+function pushEvent(state: NativeAgentRuntimeState, kind: NativeAgentRuntimeEvent['kind'], text: string) {
   const trimmed = text.trim();
   if (!trimmed) return;
   const next = [...state.events, { kind, text: trimmed, createdAt: Date.now() }];
   state.events = next.slice(-MAX_EVENTS);
 }
 
-function syncSession(state: ClaudeCodeRuntimeState, terminalState: TerminalState) {
-  const session = terminalState.sessions.find((item) => item.title === CLAUDE_SESSION_TITLE) ?? null;
+function syncSession(state: NativeAgentRuntimeState, terminalState: TerminalState) {
+  const session = terminalState.sessions.find((item) => item.title === NATIVE_AGENT_SESSION_TITLE) ?? null;
   state.sessionId = session?.id ?? null;
   state.connected = session?.connected ?? false;
   state.workspaceRoot = terminalState.workspaceRoot;
@@ -127,7 +127,7 @@ function stripDebugPrefix(line: string) {
   return line.replace(DEBUG_PREFIX_PATTERN, '').trim();
 }
 
-function defaultResumeInfo(): ClaudeRuntimeResumeInfo {
+function defaultResumeInfo(): NativeAgentRuntimeResumeInfo {
   return {
     restoredFromStorage: false,
     restoredAt: null,
@@ -140,8 +140,8 @@ function isLikelyTerminalNoise(line: string) {
   return TERMINAL_NOISE_PATTERNS.some((pattern) => pattern.test(line));
 }
 
-class ClaudeCodeClient {
-  private state: ClaudeCodeRuntimeState = {
+class NativeAgentClient {
+  private state: NativeAgentRuntimeState = {
     sessionId: null,
     workspaceRoot: null,
     connected: false,
@@ -162,7 +162,7 @@ class ClaudeCodeClient {
     }
   };
 
-  private listeners = new Set<(state: ClaudeCodeRuntimeState) => void>();
+  private listeners = new Set<(state: NativeAgentRuntimeState) => void>();
   private offTerminal: (() => void) | null = null;
   private lineBuffer = '';
   private collectingPlan = false;
@@ -175,7 +175,7 @@ class ClaudeCodeClient {
 
   private emit() {
     this.persistState();
-    const snapshot: ClaudeCodeRuntimeState = {
+    const snapshot: NativeAgentRuntimeState = {
       ...this.state,
       lastPlan: [...this.state.lastPlan],
       events: [...this.state.events],
@@ -203,7 +203,7 @@ class ClaudeCodeClient {
     this.lastDebugMtimeMs = 0;
   }
 
-  private cloneStateSnapshot(): ClaudeCodeRuntimeState {
+  private cloneStateSnapshot(): NativeAgentRuntimeState {
     return {
       ...this.state,
       lastPlan: [...this.state.lastPlan],
@@ -269,7 +269,7 @@ class ClaudeCodeClient {
       if (this.state.sessionId !== event.sessionId) return;
       this.state.connected = false;
       this.state.running = false;
-      pushEvent(this.state, 'lifecycle', `Claude Code session exited (${event.signal ?? event.exitCode ?? 'unknown'})`);
+      pushEvent(this.state, 'lifecycle', `Native Agent session exited (${event.signal ?? event.exitCode ?? 'unknown'})`);
       this.ensureDebugPolling();
       this.emit();
     });
@@ -287,7 +287,7 @@ class ClaudeCodeClient {
     if (!canUseStorage()) return;
     const workspaceRoot = this.state.workspaceRoot;
     if (!workspaceRoot) return;
-    const payload: StoredClaudeRuntime = {
+    const payload: StoredNativeAgentRuntime = {
       workspaceRoot,
       debugLogPath: this.state.debugLogPath,
       pendingQuestion: this.state.pendingQuestion,
@@ -321,7 +321,7 @@ class ClaudeCodeClient {
         return;
       }
 
-      const stored = JSON.parse(raw) as Partial<StoredClaudeRuntime>;
+      const stored = JSON.parse(raw) as Partial<StoredNativeAgentRuntime>;
       this.state.pendingQuestion = typeof stored.pendingQuestion === 'string' ? stored.pendingQuestion : null;
       this.state.pendingApproval = typeof stored.pendingApproval === 'string' ? stored.pendingApproval : null;
       this.state.lastPlan = Array.isArray(stored.lastPlan)
@@ -334,7 +334,7 @@ class ClaudeCodeClient {
       this.lastDebugSize = this.lastDebugContents.length;
       this.lastDebugMtimeMs = 0;
       this.state.events = Array.isArray(stored.events)
-        ? stored.events.filter((event): event is ClaudeCodeRuntimeEvent => (
+        ? stored.events.filter((event): event is NativeAgentRuntimeEvent => (
           Boolean(event)
           && typeof event === 'object'
           && typeof event.kind === 'string'
@@ -348,7 +348,7 @@ class ClaudeCodeClient {
         snapshotSavedAt: typeof stored.savedAt === 'number' ? stored.savedAt : null,
         snapshotSessionId: typeof stored.lastSessionId === 'number' ? stored.lastSessionId : null
       };
-      pushEvent(this.state, 'lifecycle', 'Restored Claude runtime state for this workspace');
+      pushEvent(this.state, 'lifecycle', 'Restored Native Agent runtime state for this workspace');
     } catch {
       // Ignore invalid stored state.
     }
@@ -441,7 +441,7 @@ class ClaudeCodeClient {
 
   private async ensureDebugDirectory(sessionId: number) {
     if (!this.state.workspaceRoot) return;
-    await terminalClient.sendCommand(`mkdir -p "${this.state.workspaceRoot}/.claude"`, sessionId, 'system');
+    await terminalClient.sendCommand(`mkdir -p "${this.state.workspaceRoot}/.inspiration"`, sessionId, 'system');
   }
 
   private getLaunchCommand() {
@@ -514,11 +514,11 @@ class ClaudeCodeClient {
     this.restorePersistedState(this.state.workspaceRoot);
     this.ensureDebugPolling();
 
-    const session = latestState.sessions.find((item) => item.title === CLAUDE_SESSION_TITLE) ?? null;
+    const session = latestState.sessions.find((item) => item.title === NATIVE_AGENT_SESSION_TITLE) ?? null;
     if (!session) {
-      const created = await terminalClient.createSession(latestState.workspaceRoot ?? undefined, CLAUDE_SESSION_TITLE);
+      const created = await terminalClient.createSession(latestState.workspaceRoot ?? undefined, NATIVE_AGENT_SESSION_TITLE);
       if (created === null) {
-        throw new Error('Unable to create Claude Code terminal session');
+        throw new Error('Unable to create Native Agent terminal session');
       }
       await terminalClient.setActiveSession(created);
       await this.ensureDebugDirectory(created);
@@ -526,7 +526,7 @@ class ClaudeCodeClient {
       this.state.sessionId = created;
       this.state.connected = true;
       this.state.running = true;
-      pushEvent(this.state, 'lifecycle', 'Started Claude Code session');
+      pushEvent(this.state, 'lifecycle', 'Started Native Agent session');
       this.emit();
       await new Promise((resolve) => window.setTimeout(resolve, 900));
       return created;
@@ -543,7 +543,7 @@ class ClaudeCodeClient {
       await terminalClient.sendCommand(this.getLaunchCommand(), session.id, 'system');
       this.state.connected = true;
       this.state.running = true;
-      pushEvent(this.state, 'lifecycle', 'Restarted Claude Code session');
+      pushEvent(this.state, 'lifecycle', 'Restarted Native Agent session');
       this.emit();
       await new Promise((resolve) => window.setTimeout(resolve, 900));
     }
@@ -565,14 +565,14 @@ class ClaudeCodeClient {
   async interrupt() {
     this.ensureSubscribed();
     const latestState = await terminalClient.getState();
-    const session = latestState.sessions.find((item) => item.title === CLAUDE_SESSION_TITLE) ?? null;
+    const session = latestState.sessions.find((item) => item.title === NATIVE_AGENT_SESSION_TITLE) ?? null;
     if (!session) return;
     await terminalClient.interrupt(session.id);
-    pushEvent(this.state, 'lifecycle', 'Interrupt requested for Claude Code');
+    pushEvent(this.state, 'lifecycle', 'Interrupt requested for Native Agent');
     this.emit();
   }
 
-  subscribe(listener: (state: ClaudeCodeRuntimeState) => void) {
+  subscribe(listener: (state: NativeAgentRuntimeState) => void) {
     this.ensureSubscribed();
     this.listeners.add(listener);
     this.ensureDebugPolling();
@@ -584,4 +584,4 @@ class ClaudeCodeClient {
   }
 }
 
-export const claudeCodeClient = new ClaudeCodeClient();
+export const nativeAgentClient = new NativeAgentClient();

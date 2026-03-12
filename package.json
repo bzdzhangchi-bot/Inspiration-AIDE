@@ -1,7 +1,7 @@
 {
   "name": "inspiration",
   "private": true,
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Inspiration is a desktop AI coding workspace with chat, terminal, and multi-project explorer.",
   "author": "Zhang Chi",
   "main": "electron/main.cjs",
@@ -17,7 +17,7 @@
     "electron:build": "tsc -p tsconfig.electron.json",
     "electron:install-app-deps": "SDKROOT=$(xcrun --show-sdk-path) CPATH=$(xcrun --show-sdk-path)/usr/include/c++/v1 CPLUS_INCLUDE_PATH=$(xcrun --show-sdk-path)/usr/include/c++/v1 npm_config_python=/usr/bin/python3 electron-builder install-app-deps",
     "electron:rebuild-node-pty": "SDKROOT=$(xcrun --show-sdk-path) CPATH=$(xcrun --show-sdk-path)/usr/include/c++/v1 CPLUS_INCLUDE_PATH=$(xcrun --show-sdk-path)/usr/include/c++/v1 npm_config_python=/usr/bin/python3 npm rebuild node-pty --build-from-source --target=40.8.0 --arch=arm64 --dist-url=https://electronjs.org/headers",
-    "electron:dev": "concurrently -k -n VITE,ELECTRON -c cyan,magenta \"vite --host 127.0.0.1 --strictPort\" \"wait-on http://127.0.0.1:5173 && VITE_DEV_SERVER_URL=http://127.0.0.1:5173 npx electron ./electron/main.cjs\"",
+    "electron:dev": "node ./scripts/electron-dev.cjs",
     "core:dev": "NODE_EXTRA_CA_CERTS=/tmp/system-root-cas.pem node --import tsx ./src/main/core-server.ts",
     "mvp:dev": "npm run electron:dev",
     "release:prepare": "npm run icon:build && npm run build && npm run electron:build && npm run dist:dir",

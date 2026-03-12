@@ -63,7 +63,7 @@ function providerLabelFor(providerId: ProviderId) {
 
 function modeLabelFor(mode: InteractionMode) {
   if (mode === 'claude_cli') return 'Claude CLI';
-  if (mode === 'claude_code') return 'Native Agent';
+  if (mode === 'native_agent') return 'Native Agent';
   return 'Standard';
 }
 
@@ -71,7 +71,7 @@ function profileMetaText(profile: ModelProfile) {
   const modeLabel = modeLabelFor(profile.interactionMode);
 
   if (profile.interactionMode === 'claude_cli') {
-    return `${modeLabel} · Local runtime (provider/model managed by Claude Code)`;
+    return `${modeLabel} · Local runtime (provider/model managed by the local CLI runtime)`;
   }
 
   const provider = providerLabelFor(profile.providerId);
@@ -94,12 +94,12 @@ function normalizeByInteraction(profile: ModelProfile, nextMode: InteractionMode
     };
   }
 
-  if (nextMode === 'claude_code') {
+  if (nextMode === 'native_agent') {
     const keepCopilotDefaults = profile.providerId === 'github_copilot';
 
     return {
       ...profile,
-      interactionMode: 'claude_code',
+      interactionMode: 'native_agent',
       baseUrl: profile.baseUrl.trim()
         ? profile.baseUrl
         : keepCopilotDefaults
@@ -347,7 +347,7 @@ export function SettingsPage(props: {
     return settings.profiles.find((profile) => profile.id === settings.activeProfileId) ?? settings.profiles[0] ?? null;
   }, [settings.activeProfileId, settings.profiles]);
   const defaultProfileChanged = draft.activeProfileId !== settings.activeProfileId;
-  const isNativeAgentProfile = selectedProfile?.interactionMode === 'claude_code';
+  const isNativeAgentProfile = selectedProfile?.interactionMode === 'native_agent';
   const isClaudeCliProfile = selectedProfile?.interactionMode === 'claude_cli';
   const selectedProfileSummary = useMemo(() => {
     if (!selectedProfile) return '';
@@ -524,7 +524,7 @@ export function SettingsPage(props: {
               <input
                 value={profile.name}
                 onChange={(e) => updateSelectedProfile((current) => ({ ...current, name: e.target.value }))}
-                placeholder="Claude Code / GPT-5 / Local Copilot"
+                placeholder="Coding model / GPT-5 / Local gateway"
               />
             </div>
 
@@ -536,7 +536,7 @@ export function SettingsPage(props: {
               >
                 <option value="standard">Standard chat</option>
                 <option value="claude_cli">Claude CLI</option>
-                <option value="claude_code">Native agent</option>
+                <option value="native_agent">Native agent</option>
               </select>
             </div>
           </div>
@@ -564,17 +564,17 @@ export function SettingsPage(props: {
 
             <div className="row">
               <div className="label">Provider settings</div>
-              <div className="settingsReadonlyValue">Handled by Claude Code itself. This GUI does not inject model/provider prompts in this mode.</div>
+              <div className="settingsReadonlyValue">Handled by the local CLI runtime. This GUI does not inject model/provider prompts in this mode.</div>
             </div>
 
             <div className="row">
               <div className="label">Model settings</div>
-              <div className="settingsReadonlyValue">Handled by Claude Code itself. The values in other modes are kept for switching back only.</div>
+              <div className="settingsReadonlyValue">Handled by the local CLI runtime. The values in other modes are kept for switching back only.</div>
             </div>
           </div>
 
           <div className="footerHint">
-            Use this mode when you want the application to host the real Claude Code runtime. Skills, session behavior, and approvals should come from Claude Code rather than this app.
+            Use this mode when you want the application to host the real local CLI runtime. Skills, session behavior, and approvals should come from the CLI runtime rather than this app.
           </div>
         </div>
       </>
@@ -622,7 +622,7 @@ export function SettingsPage(props: {
           </div>
 
           <div className="settingsMiniNote">
-            This form configures the app's own agent runtime. It can mimic a coding workflow, but it is not the Claude Code CLI runtime.
+            This form configures the app's own agent runtime. It can mimic a coding workflow, but it is not the local CLI runtime.
           </div>
         </div>
 
@@ -900,7 +900,7 @@ export function SettingsPage(props: {
                 </li>
                 <li>该模式现在可以使用 Copilot（local gateway）、Anthropic-Compatible（Claude Messages API）或 OpenAI-Compatible，前提是对应 provider 本身可连通。</li>
                 <li>
-                  注意：这里的 “Native Agent” 指的是<strong>本应用内置的 agent 实现</strong>，不是 Claude Code / Claude CLI 本体。
+                  注意：这里的 “Native Agent” 指的是<strong>本应用内置的 agent 实现</strong>，不是 local CLI 本体。
                 </li>
                 <li>该模式会使用 workspace context、工具调用和更偏执行型的系统提示词，并可在聊天页查看 Inspector / progress 信息。</li>
                 <li>更适合“继续做这个重构”“先看看工程再改”“读文件后给出 patch”这类任务。</li>
@@ -908,7 +908,7 @@ export function SettingsPage(props: {
 
               <h4>Claude CLI（claude_cli，CLI 模式）</h4>
               <ul>
-                <li>将提示词转发给本机的 Claude Code / Claude CLI 运行时来执行。</li>
+                <li>将提示词转发给本机的 local CLI 运行时来执行。</li>
                 <li>
                   在该模式下，本页的 provider/model 等设置对实际运行<strong>不生效</strong>：认证、provider 与 model 选择由 CLI 自己管理。
                 </li>
@@ -1000,7 +1000,7 @@ export function SettingsPage(props: {
                 </li>
                 <li>This mode now works with Copilot (local gateway), Anthropic-Compatible (Claude Messages API), or OpenAI-Compatible providers, as long as the connection is valid.</li>
                 <li>
-                  Note: this "Native Agent" is implemented in this app. It is <strong>not</strong> the Claude Code / Claude CLI runtime.
+                  Note: this "Native Agent" is implemented in this app. It is <strong>not</strong> the local CLI runtime.
                 </li>
                 <li>This mode uses workspace context, tool calls, and a more execution-oriented system prompt, and you can inspect progress / runtime context from chat.</li>
                 <li>Best for tasks like exploring a repo, reading files first, and then producing patches or stepwise changes.</li>
@@ -1008,7 +1008,7 @@ export function SettingsPage(props: {
 
               <h4>Claude CLI (claude_cli)</h4>
               <ul>
-                <li>Routes prompts to your local Claude Code/Claude CLI runtime.</li>
+                <li>Routes prompts to your local local CLI runtime.</li>
                 <li>
                   In this mode, provider/model settings in this GUI are <strong>ignored</strong> for the actual run (the CLI manages them).
                 </li>

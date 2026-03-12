@@ -190,12 +190,10 @@ export async function checkProviderConnection(req) {
                 'anthropic-version': '2023-06-01'
             }
         });
-        if (resp.status === 404) {
-            return await probeAnthropicMessagesEndpoint(req, baseUrl);
+        if (resp.ok) {
+            return { ok: true, message: `Anthropic-compatible endpoint reachable at ${baseUrl}.` };
         }
-        return resp.ok
-            ? { ok: true, message: `Anthropic-compatible endpoint reachable at ${baseUrl}.` }
-            : { ok: false, message: describeHttpFailure('Anthropic', resp.status, resp.statusText) };
+        return await probeAnthropicMessagesEndpoint(req, baseUrl, resp);
     }
     catch (error) {
         return {
@@ -204,7 +202,7 @@ export async function checkProviderConnection(req) {
         };
     }
 }
-async function probeAnthropicMessagesEndpoint(req, baseUrl) {
+async function probeAnthropicMessagesEndpoint(req, baseUrl, initialResponse) {
     const resp = await fetch(buildApiUrl(baseUrl, 'v1/messages'), {
         method: 'POST',
         headers: {
@@ -222,12 +220,21 @@ async function probeAnthropicMessagesEndpoint(req, baseUrl) {
     if (resp.ok) {
         return { ok: true, message: `Anthropic-compatible endpoint reachable at ${baseUrl}.` };
     }
+    const detail = await safeReadErrorMessage(resp);
+    if (detail) {
+        return { ok: false, message: detail };
+    }
     if (resp.status === 400) {
-        const detail = await safeReadErrorMessage(resp);
         return {
             ok: false,
-            message: detail || 'Anthropic-compatible endpoint reached, but the request was rejected. Check the model name and request format.'
+            message: 'Anthropic-compatible endpoint reached, but the request was rejected. Check the model name and request format.'
         };
+    }
+    if (initialResponse) {
+        const initialDetail = await safeReadErrorMessage(initialResponse);
+        if (initialDetail) {
+            return { ok: false, message: initialDetail };
+        }
     }
     return {
         ok: false,

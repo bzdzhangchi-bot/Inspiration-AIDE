@@ -76,7 +76,7 @@ register({
       },
       body: JSON.stringify({
         model: req.model,
-        max_tokens: req.interactionMode === 'claude_code' ? 4096 : 1024,
+        max_tokens: req.interactionMode === 'native_agent' ? 4096 : 1024,
         system,
         messages: messages.map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })),
         stream: true
@@ -328,7 +328,24 @@ async function safeReadErrorMessage(resp: Response) {
   return '';
 }
 
-const AGENT_TOOL_NAMES: AgentToolName[] = ['list_dir', 'read_file', 'apply_patch', 'write_file', 'run_command', 'ask_user'];
+const AGENT_TOOL_NAMES: AgentToolName[] = [
+  'list_dir',
+  'read_file',
+  'read_file_range',
+  'search_text',
+  'openclaw_skill_list',
+  'openclaw_skill_info',
+  'openclaw_agent',
+  'apply_patch',
+  'write_file',
+  'create_file',
+  'create_dir',
+  'delete_entry',
+  'git_status',
+  'git_diff',
+  'run_command',
+  'ask_user'
+];
 
 type RawAgentMessageBlock = {
   type?: string;
@@ -399,6 +416,78 @@ function buildAgentToolDefinitions() {
       }
     },
     {
+      name: 'read_file_range',
+      description: 'Read only a line range from a text file when the full file would be excessive.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Relative or absolute file path.' },
+          startLine: { type: 'integer', description: '1-based start line number.' },
+          endLine: { type: 'integer', description: '1-based inclusive end line number.' }
+        },
+        required: ['path', 'startLine', 'endLine'],
+        additionalProperties: false
+      }
+    },
+    {
+      name: 'search_text',
+      description: 'Search for text or a regex inside the workspace, preferably before opening many files.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Text or regex pattern to search for.' },
+          path: { type: 'string', description: 'Optional file or directory scope. Defaults to the current workspace root.' },
+          isRegexp: { type: 'boolean', description: 'Treat query as a regular expression when true.' },
+          maxResults: { type: 'integer', description: 'Optional cap on returned matching lines.' }
+        },
+        required: ['query'],
+        additionalProperties: false
+      }
+    },
+    {
+      name: 'openclaw_skill_list',
+      description: 'List OpenClaw skills that are available through the local CLI, including ClawHub-provided skills when present.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          eligibleOnly: {
+            type: 'boolean',
+            description: 'When true, return only skills that are ready to use in the current environment.'
+          }
+        },
+        additionalProperties: false
+      }
+    },
+    {
+      name: 'openclaw_skill_info',
+      description: 'Show detailed metadata for a specific OpenClaw skill by name.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'OpenClaw skill name.' }
+        },
+        required: ['name'],
+        additionalProperties: false
+      }
+    },
+    {
+      name: 'openclaw_agent',
+      description: 'Delegate a task to the local OpenClaw agent runtime, optionally steering it toward a specific OpenClaw skill.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          prompt: { type: 'string', description: 'Task to hand off to the local OpenClaw agent.' },
+          skillName: { type: 'string', description: 'Optional OpenClaw skill name to prioritize for this task.' },
+          agentId: { type: 'string', description: 'Optional OpenClaw agent id. Defaults to the configured default agent.' },
+          timeoutMs: { type: 'integer', description: 'Optional timeout in milliseconds for the delegated OpenClaw run.' },
+          responseMode: { type: 'string', enum: ['text', 'json'], description: 'Prefer plain text or strict JSON in the delegated response.' },
+          forceSkill: { type: 'boolean', description: 'When true, require the named skill instead of silently falling back to another OpenClaw capability.' }
+        },
+        required: ['prompt'],
+        additionalProperties: false
+      }
+    },
+    {
       name: 'apply_patch',
       description: 'Apply exact-text replacements to an existing text file.',
       input_schema: {
@@ -438,6 +527,68 @@ function buildAgentToolDefinitions() {
       }
     },
     {
+      name: 'create_file',
+      description: 'Create a new file. Prefer this instead of write_file when the file should not already exist.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string' },
+          content: { type: 'string' }
+        },
+        required: ['path'],
+        additionalProperties: false
+      }
+    },
+    {
+      name: 'create_dir',
+      description: 'Create a new directory in the workspace.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string' }
+        },
+        required: ['path'],
+        additionalProperties: false
+      }
+    },
+    {
+      name: 'delete_entry',
+      description: 'Delete a file or directory from the workspace.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string' }
+        },
+        required: ['path'],
+        additionalProperties: false
+      }
+    },
+    {
+      name: 'git_status',
+      description: 'Inspect Git status for the current workspace root or a provided workspace root.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          workspaceRoot: { type: 'string', description: 'Optional absolute workspace root path.' }
+        },
+        additionalProperties: false
+      }
+    },
+    {
+      name: 'git_diff',
+      description: 'Read the Git diff for a file in the current workspace root or a provided workspace root.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute or workspace-relative file path.' },
+          workspaceRoot: { type: 'string', description: 'Optional absolute workspace root path.' },
+          staged: { type: 'boolean', description: 'Read staged diff when true.' }
+        },
+        required: ['path'],
+        additionalProperties: false
+      }
+    },
+    {
       name: 'run_command',
       description: 'Run a shell command in the workspace terminal and capture stdout/stderr.',
       input_schema: {
@@ -452,7 +603,7 @@ function buildAgentToolDefinitions() {
     },
     {
       name: 'ask_user',
-      description: 'Ask the user a focused follow-up question or present 2 to 4 implementation plans with short tradeoffs, then wait for their answer before continuing.',
+      description: 'Ask the user a focused follow-up question or present 2 to 4 implementation plans with short tradeoffs, using clickable options instead of freeform typing.',
       input_schema: {
         type: 'object',
         properties: {
@@ -480,11 +631,15 @@ function buildAgentToolDefinitions() {
                 }
               ]
             },
-            description: 'Optional short list of choices or richer choice cards.'
+            description: 'Short list of clickable choices or richer choice cards. Prefer supplying 2 to 4 options.'
+          },
+          multiSelect: {
+            type: 'boolean',
+            description: 'When true, allow selecting multiple options before submitting the answer.'
           },
           allowFreeform: {
             type: 'boolean',
-            description: 'Whether the user may type a custom response.'
+            description: 'Deprecated. Keep false and prefer clickable options instead of typed answers.'
           }
         },
         required: ['prompt'],
@@ -869,7 +1024,7 @@ async function* streamAnthropic(req: ChatRequest): AsyncGenerator<StreamEvent> {
     model: req.model,
     system,
     temperature: req.temperature,
-    max_tokens: req.interactionMode === 'claude_code' ? 4096 : 1024,
+    max_tokens: req.interactionMode === 'native_agent' ? 4096 : 1024,
     messages: messages.map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }))
   });
 
@@ -906,7 +1061,7 @@ async function* streamOpenAICompat(req: ChatRequest): AsyncGenerator<StreamEvent
       model: req.model,
       messages: req.messages,
       temperature: req.temperature,
-      max_tokens: req.interactionMode === 'claude_code' ? 4096 : 1024,
+      max_tokens: req.interactionMode === 'native_agent' ? 4096 : 1024,
       stream: true
     })
   });

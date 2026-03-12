@@ -195,7 +195,13 @@ function MarkdownPre({ children, ...props }: MarkdownPreProps & { node?: Markdow
   );
 }
 
-export default function MarkdownPreviewContent({ markdown }: { markdown: string }) {
+export default function MarkdownPreviewContent({
+  markdown,
+  onOpenFileLink
+}: {
+  markdown: string;
+  onOpenFileLink?: (href: string) => void | Promise<void>;
+}) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkBreaks]}
@@ -206,11 +212,18 @@ export default function MarkdownPreviewContent({ markdown }: { markdown: string 
         code: MarkdownCode,
         a({ href, children, ...props }) {
           const external = typeof href === 'string' && /^(https?:)?\/\//.test(href);
+          const isHashLink = typeof href === 'string' && href.startsWith('#');
           return (
             <a
               href={href}
               target={external ? '_blank' : undefined}
               rel={external ? 'noreferrer noopener' : undefined}
+              onClick={(event) => {
+                props.onClick?.(event);
+                if (event.defaultPrevented || !href || external || isHashLink || !onOpenFileLink) return;
+                event.preventDefault();
+                void onOpenFileLink(href);
+              }}
               {...props}
             >
               {children}
